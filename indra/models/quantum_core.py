@@ -8,6 +8,20 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional, Tuple
 
+def complex_relu(real: torch.Tensor, imag: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Complex ReLU: ReLU(Real) + i * ReLU(Imag)
+    
+    Args:
+        real: Real part of the tensor
+        imag: Imaginary part of the tensor
+        
+    Returns:
+        Tuple of (real_out, imag_out)
+    """
+    return F.relu(real), F.relu(imag)
+
+
 
 class ComplexLinear(nn.Module):
     """

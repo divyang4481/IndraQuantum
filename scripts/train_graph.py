@@ -84,7 +84,9 @@ def train_graph_model(epochs=1, batch_size=4, lr=3e-4):
     loader = DataLoader(train_data, batch_size=batch_size, collate_fn=collator, shuffle=True)
     
     # Model
-    vocab_size = 32000
+    # Vocab size needs to include special graph tokens (SENT, PARA)
+    # TinyLlama has 32000. We added 2.
+    vocab_size = 32002
     d_model = 128
     model = IndraQuantumGraph(vocab_size, d_model).to(device)
     print(f"Model Parameters: {model.get_num_params():,}")
@@ -118,32 +120,37 @@ def train_graph_model(epochs=1, batch_size=4, lr=3e-4):
             
             # Teacher Forward
             # Teacher expects standard input_ids. 
-            # Our input_ids contain extra nodes (Sentence/Para).
-            # We should filter them out for the teacher OR just pass them and ignore output?
-            # Teacher won't understand Sentence/Para tokens (they are UNK or EOS).
-            # Strategy: Extract only Token nodes (type 0) for Teacher.
-            
-            # Mask for tokens
-            token_mask = (node_types == 0)
-            
-            # This is tricky because batch items have different token counts.
-            # For simplicity in this demo: We pass the full sequence to Teacher.
-            # The Teacher will treat Sentence/Para tokens as whatever ID we gave them (EOS).
-            # This is "noisy" but allows dimension matching.
+            # Our input_ids contain extra nodes (Sentence/Para) with IDs >= 32000.
+            # These will cause index errors in Teacher.
+            # We replace them with PAD/UNK (0) for Teacher input.
+            teacher_input_ids = input_ids.clone()
+            teacher_input_ids[teacher_input_ids >= 32000] = 0
             
             with torch.no_grad():
-                teacher_out = teacher(input_ids)
+                teacher_out = teacher(teacher_input_ids)
                 teacher_logits = teacher_out.logits
                 
-            # Compute Loss only on Token nodes?
-            # Or full sequence?
-            # Let's do full sequence KD for simplicity, assuming Teacher's reaction to EOS 
-            # is a valid target for Student's reaction to SentenceNode.
+            # CRITICAL FIX: Mask the logits to only consider Token nodes (node_types == 0)
+            token_mask = (node_types == 0)
+            
+            # Filter logits using the mask
+            # student_logits: [B, S, V_student] -> [N_tokens, V_student]
+            # teacher_logits: [B, S, V_teacher] -> [N_tokens, V_teacher]
+            
+            # Note: Student vocab (32002) > Teacher vocab (32000).
+            # We should slice student logits to match teacher vocab size for KD,
+            # or just ignore the extra dimensions since we are masking the positions anyway?
+            # Actually, the target distribution (teacher) is size 32000.
+            # The student prediction is size 32002.
+            # We should compare the first 32000 dimensions.
+            
+            student_logits_tokens = student_logits[token_mask][:, :32000]
+            teacher_logits_tokens = teacher_logits[token_mask]
             
             T = 2.0
             loss = kl_loss(
-                torch.nn.functional.log_softmax(student_logits / T, dim=-1),
-                torch.nn.functional.softmax(teacher_logits / T, dim=-1)
+                torch.nn.functional.log_softmax(student_logits_tokens / T, dim=-1),
+                torch.nn.functional.softmax(teacher_logits_tokens / T, dim=-1)
             ) * (T * T)
             
             loss.backward()
