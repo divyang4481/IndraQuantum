@@ -112,8 +112,9 @@ class IndraQuantum(nn.Module):
         
         # Complex-valued embeddings (real and imaginary parts)
         # We use d_model * 2 to store both real and imaginary components
-        self.token_embedding = nn.Embedding(vocab_size, d_model * 2)
-        self.position_embedding = nn.Embedding(max_seq_length, d_model * 2)
+        from .embedding import QuantumEmbedding
+        self.token_embedding = QuantumEmbedding(vocab_size, d_model)
+        self.position_embedding = QuantumEmbedding(max_seq_length, d_model)
         
         # Quantum-inspired transformation layers
         self.quantum_layers = nn.ModuleList([
@@ -136,8 +137,9 @@ class IndraQuantum(nn.Module):
     
     def reset_parameters(self):
         """Initialize parameters"""
-        nn.init.normal_(self.token_embedding.weight, std=0.02)
-        nn.init.normal_(self.position_embedding.weight, std=0.02)
+        # Embeddings are already initialized by QuantumEmbedding
+        # nn.init.normal_(self.token_embedding.weight, std=0.02)
+        # nn.init.normal_(self.position_embedding.weight, std=0.02)
         nn.init.normal_(self.output_projection.weight, std=0.02)
         nn.init.zeros_(self.output_projection.bias)
     
