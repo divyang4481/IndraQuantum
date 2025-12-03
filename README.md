@@ -86,11 +86,11 @@ flowchart TD
     Input[Complex Input State] --> Q[Query Proj]
     Input --> K[Key Proj]
     
-    Q & K --> Attn{Complex Attention<br>|Q* K|^2}
+    Q & K --> Attn{Complex Attention<br/>&#124;Q* K&#124;^2}
     
     subgraph Biases [Additive Biases]
-        LB[Local Window Bias<br>(Distance Mask)]
-        HB[Hierarchy Bias<br>(Graph Edges)]
+        LB[Local Window Bias<br/>Distance Mask]
+        HB[Hierarchy Bias<br/>Graph Edges]
     end
     
     Biases --> Attn
@@ -147,18 +147,39 @@ print(output)
 IndraQuantum/
 ├── indra/
 │   ├── models/
-│   │   ├── quantum_core.py    # Core Complex-Valued Model
-│   │   ├── tensor_layers.py   # Tensor Train Linear Layers
-│   │   └── interference.py    # Quantum Attention Mechanism
-│   ├── graph/
-│   │   └── phase_shift.py     # Graph-to-Phase logic
-│   └── utils/
-│       └── complex_ops.py     # Complex number helpers
+│   │   ├── baseline.py         # Reference real-valued model
+│   │   ├── embedding.py        # Complex embedding construction
+│   │   ├── quantum_core.py     # Core IndraQuantum module
+│   │   └── quantum_graph.py    # Graph-aware variant
+│   └── graph/
+│       ├── builder.py          # Builds document graph structure
+│       └── phase_shift.py      # Graph-to-phase translation
 ├── scripts/
-│   ├── train_quantum.py       # KD Training Loop
-│   └── benchmark_param.py     # Parameter efficiency tests
-└── configs/
-    └── quantum_6gb.yaml       # Config for low VRAM
+│   ├── train_quantum.py        # KD training entry point
+│   ├── train_graph.py          # Graph-enhanced training
+│   ├── train_compare.py        # Baseline vs quantum experiments
+│   ├── architecture_comparison.py
+│   ├── run_comparison.py
+│   ├── run_full_comparison.py
+│   ├── prepare_data.py         # Dataset preprocessing helpers
+│   ├── setup_teacher.py        # Teacher-model bootstrap
+│   ├── test_kd_setup.py        # KD sanity checks
+│   └── demo_embedding_usage.py # Minimal embedding demo
+├── configs/
+│   └── quantum_6gb.yaml        # Default low-VRAM config
+├── data/
+│   └── wikitext/
+│       ├── train.pkl
+│       ├── validation.pkl
+│       └── test.pkl
+├── tests/
+│   ├── test_graph_layer.py
+│   └── test_quantum_core.py
+├── checkpoints/
+├── logs/
+├── notebooks/
+├── plots/
+└── teacher_models/
 ```
 
 ---
