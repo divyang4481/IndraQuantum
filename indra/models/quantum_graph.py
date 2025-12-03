@@ -63,6 +63,9 @@ class ComplexGraphAttentionLayer(nn.Module):
         v = self.v_proj(x)
         
         # Reshape for heads: [B, S, H, D_head * 2]
+        # This is where the "Multi-Head" magic happens.
+        # We split the d_model dimension into n_heads independent subspaces.
+        # Each head will learn different attention patterns (e.g., Local vs Global).
         def split_heads(tensor):
             # tensor: [B, S, D*2] -> Real: [B, S, D], Imag: [B, S, D]
             t_real, t_imag = torch.chunk(tensor, 2, dim=-1)
@@ -132,7 +135,9 @@ class ComplexGraphAttentionLayer(nn.Module):
         o_r = torch.matmul(attn_probs, v_r)
         o_i = torch.matmul(attn_probs, v_i)
         
-        # Recombine heads
+        # Recombine heads (Multi-Head Merge)
+        # We merge the independent heads back into a single vector.
+        # This completes the Multi-Head Attention mechanism.
         def combine_heads(t_r, t_i):
             # [B, H, S, Dh] -> [B, S, H, Dh] -> [B, S, D]
             t_r = t_r.transpose(1, 2).contiguous().view(batch_size, seq_len, self.d_model)
