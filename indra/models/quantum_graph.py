@@ -14,11 +14,12 @@ class ComplexGraphAttentionLayer(nn.Module):
     2. Edge Bias: Adds learned bias based on graph structure
     3. Complex FFN with CReLU
     """
-    def __init__(self, d_model, n_heads=4, dropout=0.1):
+    def __init__(self, d_model, n_heads=4, dropout=0.1, local_window=16):
         super().__init__()
         self.d_model = d_model
         self.n_heads = n_heads
         self.head_dim = d_model // n_heads
+        self.local_window = local_window
         
         assert self.head_dim * n_heads == d_model, "d_model must be divisible by n_heads"
         
@@ -28,16 +29,14 @@ class ComplexGraphAttentionLayer(nn.Module):
         self.v_proj = ComplexLinear(d_model, d_model)
         self.o_proj = ComplexLinear(d_model, d_model)
         
-        # Edge Bias
-        # We assume 3 edge types: 0 (None/Self), 1 (Local/Sentence), 2 (Global/Hierarchy)
-        # Or maybe we use the graph_mask values directly?
-        # The user mentioned "similar to _build_edge_bias_mask from NyGraphTiny".
-        # And "Apply Additive Bias... based on edge type".
-        # Let's assume the graph_mask passed in contains edge types (0, 1, 2...).
-        # If graph_mask is just adjacency (0/1), we might need to update builder to send types.
-        # For now, let's assume graph_mask is the edge type matrix.
-        self.num_edge_types = 4 # None, Self, Local, Global
-        self.edge_bias = nn.Embedding(self.num_edge_types, n_heads)
+        # Edge Bias Refinement
+        # We combine two separate biases:
+        # 1. Local Window Bias (Distance-based)
+        # 2. Hierarchy Bias (Graph Mask-based)
+        # bias_weights: [n_heads, 3] -> 0=Local, 1=Hierarchy, 2=Global/Unused
+        self.bias_weights = nn.Parameter(torch.zeros(n_heads, 3))
+        # Initialize bias_weights[0] (Local) and bias_weights[1] (Hierarchy)
+        # We can initialize them to something small or let them learn from 0.
         
         # FFN
         self.ffn_1 = ComplexLinear(d_model, d_model * 4)
@@ -64,10 +63,6 @@ class ComplexGraphAttentionLayer(nn.Module):
         v = self.v_proj(x)
         
         # Reshape for heads: [B, S, H, D_head * 2]
-        # We need to handle the interleaved real/imag parts carefully.
-        # x is [Re, Im] concatenated? No, ComplexLinear returns [Re, Im] concatenated.
-        # So first half is Real, second half is Imag.
-        
         def split_heads(tensor):
             # tensor: [B, S, D*2] -> Real: [B, S, D], Imag: [B, S, D]
             t_real, t_imag = torch.chunk(tensor, 2, dim=-1)
@@ -97,17 +92,36 @@ class ComplexGraphAttentionLayer(nn.Module):
         # Scale
         attn_scores = attn_scores / math.sqrt(self.head_dim)
         
-        # Add Edge Bias
-        # graph_mask: [B, S, S] containing edge types
-        # edge_bias: [NumTypes, H]
-        # We want [B, H, S, S]
+        # 3. Add Edge Biases (Local Window + Hierarchy)
         
-        # Ensure graph_mask is long for embedding lookup
-        edge_types = graph_mask.long()
-        bias = self.edge_bias(edge_types) # [B, S, S, H]
-        bias = bias.permute(0, 3, 1, 2)   # [B, H, S, S]
+        # A. Local Window Bias (Distance-based)
+        positions = torch.arange(seq_len, device=x.device)
+        # Mask is True for positions within the window
+        # [S, S]
+        dist = (positions.unsqueeze(0) - positions.unsqueeze(1)).abs()
+        local_mask = (dist <= self.local_window).float().unsqueeze(0).unsqueeze(0) # [1, 1, S, S]
         
-        attn_scores = attn_scores + bias
+        # Bias for local window (self.bias_weights[:, 0])
+        local_bias = self.bias_weights[:, 0].view(1, self.n_heads, 1, 1) # [1, H, 1, 1]
+        local_attn_bias = local_bias * local_mask # [1, H, S, S]
+        
+        attn_scores = attn_scores + local_attn_bias
+        
+        # B. Hierarchy Bias (Graph Mask-based)
+        # Edge types from builder are 1 (Self), 2 (Local), 3 (Global)
+        # We want to apply hierarchy bias to structural edges.
+        # Let's assume any edge type > 1 is a structural/hierarchy edge.
+        # (Self loops are type 1, usually we don't need special bias for self beyond local, or maybe we do?)
+        # User said: "Use index 1 (Hierarchy bias) for non-zero entries in graph_mask (excluding self-loops if needed)"
+        # And "Mapping for simplicity: All non-self, non-zero entries get the Hierarchy bias."
+        
+        hierarchy_mask = (graph_mask > 1).float().unsqueeze(1) # [B, 1, S, S]
+        
+        # Bias for hierarchy (self.bias_weights[:, 1])
+        hierarchy_bias = self.bias_weights[:, 1].view(1, self.n_heads, 1, 1) # [1, H, 1, 1]
+        hierarchy_attn_bias = hierarchy_bias * hierarchy_mask
+        
+        attn_scores = attn_scores + hierarchy_attn_bias
         
         # Softmax
         attn_probs = F.softmax(attn_scores, dim=-1)
@@ -115,9 +129,6 @@ class ComplexGraphAttentionLayer(nn.Module):
         
         # Apply to V
         # Output is Real * V (since probabilities are real)
-        # O_r = A * V_r
-        # O_i = A * V_i
-        
         o_r = torch.matmul(attn_probs, v_r)
         o_i = torch.matmul(attn_probs, v_i)
         
@@ -142,8 +153,8 @@ class ComplexGraphAttentionLayer(nn.Module):
         
         # CReLU
         x_r, x_i = torch.chunk(x, 2, dim=-1)
-        x_r, x_i = complex_relu(x_r, x_i)
-        x = torch.cat([x_r, x_i], dim=-1)
+        x_r_out, x_i_out = complex_relu(x_r, x_i)
+        x = torch.cat([x_r_out, x_i_out], dim=-1)
         
         # FFN 2
         x = self.ffn_2(x)
