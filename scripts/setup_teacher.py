@@ -49,14 +49,10 @@ def setup_teacher_model(model_name="microsoft/phi-2", cache_dir="./teacher_model
         else:
             raise e
         
-        print(f"Successfully loaded {model_name}")
-        print(f"Model parameters: {model.num_parameters() / 1e9:.2f}B")
-        
-        return model, tokenizer
-        
-    except Exception as e:
-        print(f"Error loading model: {e}")
-        return None, None
+    print(f"Successfully loaded {model_name}")
+    print(f"Model parameters: {model.num_parameters() / 1e9:.2f}B")
+    
+    return model, tokenizer
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Setup Teacher Model for KD")

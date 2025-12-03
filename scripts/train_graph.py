@@ -73,6 +73,12 @@ def train_graph_model(epochs=1, batch_size=4, lr=3e-4):
     # Load Data
     with open("data/wikitext/train.pkl", "rb") as f:
         train_data = pickle.load(f)
+    
+    # Convert to list of dicts to avoid Dataset indexing issues
+    # The error `KeyError: 2` or `0` likely comes from the Dataset object's __getitem__ behavior
+    # when accessed by the DataLoader in a way it doesn't expect (e.g. list of indices).
+    train_data = [train_data[i] for i in range(len(train_data))]
+    
     # Subset for speed
     train_data = train_data[:200] 
     

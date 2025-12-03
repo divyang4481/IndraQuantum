@@ -33,13 +33,77 @@ Standard Transformers treat tokens as static points in high-dimensional space. *
 
 ## 🧠 Architecture Comparison
 
-| Component | Classical Transformer | IndraQuantum |
-| :--- | :--- | :--- |
 | **Embedding** | `Float32` Vector | `Complex64` Wavefunction |
-| **Attention** | Dot Product ($Q K^T$) | **Interference** ($|Q^\dagger K|^2$) |
-| **Structure** | Absolute Positional Encoding | **Graph Phase Rotation** |
-| **FFN Layers** | Dense Matrices | **Tensor Train (TT) Decomposition** |
+| **Attention** | Dot Product ($Q K^T$) | **Complex Edge-Biased** ($|Q^\dagger K|^2 + \text{Bias}$) |
+| **Structure** | Absolute Positional Encoding | **Graph Topology + Local Window** |
+| **FFN Layers** | Dense Matrices | **Complex FFN with CReLU** |
 | **Output** | Linear Projection | **Born Rule Measurement** |
+
+---
+
+## 🏛️ Complex Edge-Biased Attention
+
+IndraQuantum uses a novel attention mechanism designed for both **Quantum-Inspired Expressivity** and **Hardware Efficiency**:
+
+### 1. The Quantum Core ($|Q^\dagger K|^2$)
+Instead of the standard dot product, we compute attention scores using the squared magnitude of the complex inner product. This mimics quantum interference, where "phase" (context) determines constructive or destructive interference between tokens.
+
+### 2. Hardware-Efficient Topology
+We use an **Appended Topology** to organize the input sequence, ensuring compatibility with fast local-window operations (like FlashAttention):
+
+```mermaid
+graph LR
+    subgraph Text [Contiguous Text Tokens]
+        T1[Token 1] --- T2[Token 2] --- T3[Token 3] --- T4[...]
+    end
+    
+    subgraph Structure [Appended Structural Nodes]
+        S1[Sentence 1]
+        S2[Sentence 2]
+        P1[Paragraph 1]
+    end
+    
+    %% Connections
+    T1 -.-> S1
+    T2 -.-> S1
+    T3 -.-> S2
+    
+    S1 ==> P1
+    S2 ==> P1
+    
+    style Text fill:#e1f5fe,stroke:#01579b
+    style Structure fill:#f3e5f5,stroke:#4a148c
+```
+
+*   **Tokens (0..N):** Represent the actual text. They are kept contiguous to allow efficient sliding window attention.
+*   **Structure (N..M):** Sentence and Paragraph nodes are appended at the end. They act as "global" routing nodes that attend to their constituent tokens.
+
+### 3. Decoupled Edge Biases
+The attention scores are modulated by two distinct, additive biases:
+
+```mermaid
+flowchart TD
+    Input[Complex Input State] --> Q[Query Proj]
+    Input --> K[Key Proj]
+    
+    Q & K --> Attn{Complex Attention<br>|Q* K|^2}
+    
+    subgraph Biases [Additive Biases]
+        LB[Local Window Bias<br>(Distance Mask)]
+        HB[Hierarchy Bias<br>(Graph Edges)]
+    end
+    
+    Biases --> Attn
+    
+    Attn --> Softmax[Softmax]
+    Softmax --> Output[Output State]
+    
+    style Attn fill:#fff9c4,stroke:#fbc02d
+    style Biases fill:#e0f2f1,stroke:#00695c
+```
+
+*   **Local Window Bias:** A distance-based bias applied only to the contiguous text tokens. It enforces a strong local context (e.g., window size = 16), allowing the model to capture immediate syntactic dependencies efficiently.
+*   **Hierarchy Bias:** A learned bias applied to edges defined by the document graph (Token $\leftrightarrow$ Sentence $\leftrightarrow$ Paragraph). This allows the model to "jump" from a word to its sentence node and back to another word, enabling long-range reasoning without an expensive $O(N^2)$ global attention map.
 
 ---
 
