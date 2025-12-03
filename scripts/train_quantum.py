@@ -11,6 +11,11 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 import yaml
 import argparse
 import os
+import sys
+
+# Add project root to path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 from pathlib import Path
 from typing import Optional, Dict, Any
 import logging
@@ -282,8 +287,17 @@ def main():
                         help='Output directory for checkpoints')
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu',
                         help='Device to use for training')
+    parser.add_argument('--resume_from_checkpoint', type=str, default=None,
+                        help='Path to checkpoint to resume from')
+    parser.add_argument('--log_file', type=str, default='training.log',
+                        help='Path to log file')
     
     args = parser.parse_args()
+    
+    # Setup file logging
+    file_handler = logging.FileHandler(args.log_file)
+    file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+    logger.addHandler(file_handler)
     
     # Load config
     logger.info(f"Loading config from {args.config}")
@@ -316,6 +330,15 @@ def main():
         max_length=config['max_seq_length']
     )
     
+    # DEBUG: Check max token ID
+    all_ids = torch.tensor(dataset.encodings['input_ids']).flatten()
+    max_id = all_ids.max().item()
+    logger.info(f"DEBUG: Max Token ID in dataset: {max_id}")
+    logger.info(f"DEBUG: Config Vocab Size: {config['vocab_size']}")
+    
+    if max_id >= config['vocab_size']:
+        logger.error(f"CRITICAL: Max token ID {max_id} exceeds vocab size {config['vocab_size']}!")
+    
     dataloader = DataLoader(
         dataset,
         batch_size=config['batch_size'],
@@ -332,13 +355,53 @@ def main():
         device=args.device
     )
     
+    # Resume from checkpoint if specified
+    start_epoch = 1
+    if args.resume_from_checkpoint:
+        logger.info(f"Resuming from checkpoint: {args.resume_from_checkpoint}")
+        checkpoint = torch.load(args.resume_from_checkpoint, map_location=args.device)
+        trainer.student.load_state_dict(checkpoint['model_state_dict'])
+        trainer.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        trainer.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        start_epoch = checkpoint['epoch'] + 1
+        logger.info(f"Resumed from epoch {checkpoint['epoch']}")
+
     # Train
     logger.info("Starting training...")
-    trainer.train(
-        dataloader=dataloader,
-        num_epochs=config['num_epochs'],
-        save_dir=args.output_dir
-    )
+    # Modified train loop to support start_epoch
+    os.makedirs(args.output_dir, exist_ok=True)
+    
+    for epoch in range(start_epoch, config['num_epochs'] + 1):
+        logger.info(f"\n{'='*50}")
+        logger.info(f"Epoch {epoch}/{config['num_epochs']}")
+        logger.info(f"{'='*50}")
+        
+        # Train epoch
+        metrics = trainer.train_epoch(dataloader, epoch)
+        
+        # Log metrics
+        logger.info(f"Epoch {epoch} completed:")
+        for key, value in metrics.items():
+            logger.info(f"  {key}: {value:.4f}")
+        
+        current_lr = trainer.scheduler.get_last_lr()[0]
+        logger.info(f"  Learning Rate: {current_lr:.6e}")
+        
+        # Update scheduler
+        trainer.scheduler.step()
+        
+        # Save checkpoint
+        if epoch % config.get('save_every', 1) == 0:
+            checkpoint_path = os.path.join(
+                args.output_dir,
+                f"checkpoint_epoch_{epoch}.pt"
+            )
+            trainer.save_checkpoint(checkpoint_path, epoch, metrics)
+    
+    # Save final model
+    final_path = os.path.join(args.output_dir, "final_model.pt")
+    trainer.save_checkpoint(final_path, config['num_epochs'], metrics)
+    logger.info(f"\nTraining completed! Final model saved to {final_path}")
 
 
 if __name__ == '__main__':

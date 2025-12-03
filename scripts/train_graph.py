@@ -114,7 +114,7 @@ def train_graph_model(epochs=1, batch_size=4, lr=3e-4):
         total_loss = 0
         pbar = tqdm(loader, desc=f"Epoch {epoch+1}")
         
-        for batch in pbar:
+        for i, batch in enumerate(pbar):
             input_ids = batch['input_ids'].to(device)
             node_types = batch['node_types'].to(device)
             graph_mask = batch['graph_mask'].to(device)
@@ -125,10 +125,6 @@ def train_graph_model(epochs=1, batch_size=4, lr=3e-4):
             student_logits = model(input_ids, node_types, graph_mask)
             
             # Teacher Forward
-            # Teacher expects standard input_ids. 
-            # Our input_ids contain extra nodes (Sentence/Para) with IDs >= 32000.
-            # These will cause index errors in Teacher.
-            # We replace them with PAD/UNK (0) for Teacher input.
             teacher_input_ids = input_ids.clone()
             teacher_input_ids[teacher_input_ids >= 32000] = 0
             
@@ -138,17 +134,6 @@ def train_graph_model(epochs=1, batch_size=4, lr=3e-4):
                 
             # CRITICAL FIX: Mask the logits to only consider Token nodes (node_types == 0)
             token_mask = (node_types == 0)
-            
-            # Filter logits using the mask
-            # student_logits: [B, S, V_student] -> [N_tokens, V_student]
-            # teacher_logits: [B, S, V_teacher] -> [N_tokens, V_teacher]
-            
-            # Note: Student vocab (32002) > Teacher vocab (32000).
-            # We should slice student logits to match teacher vocab size for KD,
-            # or just ignore the extra dimensions since we are masking the positions anyway?
-            # Actually, the target distribution (teacher) is size 32000.
-            # The student prediction is size 32002.
-            # We should compare the first 32000 dimensions.
             
             student_logits_tokens = student_logits[token_mask][:, :32000]
             teacher_logits_tokens = teacher_logits[token_mask]
@@ -163,7 +148,14 @@ def train_graph_model(epochs=1, batch_size=4, lr=3e-4):
             optimizer.step()
             
             total_loss += loss.item()
-            pbar.set_postfix({'loss': loss.item()})
+            
+            # Update progress bar
+            pbar.set_postfix({'loss': f"{loss.item():.4f}"})
+            
+            # Log every 10 steps
+            if (i + 1) % 10 == 0:
+                # You can add file logging here if needed, but tqdm handles console output
+                pass
             
         avg_loss = total_loss / len(loader)
         print(f"Epoch {epoch+1} Loss: {avg_loss:.4f}")
