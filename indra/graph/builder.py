@@ -17,6 +17,12 @@ class TextGraphBuilder:
         self.tokenizer = tokenizer
         self.max_seq_len = max_seq_len
         
+        # Define special token IDs for graph nodes
+        # We assume these are added to the end of the vocabulary
+        self.vocab_size = tokenizer.vocab_size if hasattr(tokenizer, 'vocab_size') else 32000
+        self.SENT_TOKEN_ID = self.vocab_size
+        self.PARA_TOKEN_ID = self.vocab_size + 1
+        
     def build_graph(self, text: str) -> Dict[str, torch.Tensor]:
         """
         Parses text and returns graph components.
@@ -25,7 +31,7 @@ class TextGraphBuilder:
             dict containing:
             - input_ids: Token IDs including special system tokens
             - attention_mask: Standard mask
-            - graph_mask: Adjacency matrix for quantum interactions
+            - graph_mask: Adjacency matrix with edge types
             - node_types: Tensor indicating node type (0=Token, 1=Sentence, 2=Para)
         """
         # 1. Split into Paragraphs
@@ -34,24 +40,16 @@ class TextGraphBuilder:
         all_tokens = []
         node_types = [] # 0=Token, 1=Sentence, 2=Para
         
-        # Edges: (Source, Target)
-        # We will build an adjacency matrix later
+        # Edges: (Source, Target, Type)
+        # Types: 1=Self, 2=Local(Token-Sent), 3=Global(Sent-Para)
         edges = []
         
         current_idx = 0
         
-        # Global Paragraph Node (Root)
-        # We can add a "Document" node, or just treat list of paragraphs.
-        # Let's stick to Sentence/Para hierarchy.
-        
         for para_idx, para in enumerate(paragraphs):
             # Create Paragraph Node
             para_node_idx = len(all_tokens)
-            # We need a special token ID for Para/Sent. 
-            # For now, let's use the tokenizer's UNK or a specific unused token if available.
-            # Assuming tokenizer has a [SEP] or similar we can repurpose, or just 0.
-            # Ideally we should extend vocabulary. For this demo, we use ID 1 (usually padding/start) as placeholder.
-            all_tokens.append(self.tokenizer.eos_token_id or 1) 
+            all_tokens.append(self.PARA_TOKEN_ID) 
             node_types.append(2) # Para
             
             # Split into Sentences
@@ -61,12 +59,12 @@ class TextGraphBuilder:
             
             for sent in sentences:
                 sent_node_idx = len(all_tokens)
-                all_tokens.append(self.tokenizer.eos_token_id or 1)
+                all_tokens.append(self.SENT_TOKEN_ID)
                 node_types.append(1) # Sentence
                 
-                # Connect Sentence to Para
-                edges.append((sent_node_idx, para_node_idx))
-                edges.append((para_node_idx, sent_node_idx))
+                # Connect Sentence to Para (Global Edge)
+                edges.append((sent_node_idx, para_node_idx, 3))
+                edges.append((para_node_idx, sent_node_idx, 3))
                 
                 # Tokenize Sentence
                 tokens = self.tokenizer.encode(sent, add_special_tokens=False)
@@ -76,22 +74,16 @@ class TextGraphBuilder:
                     all_tokens.append(token)
                     node_types.append(0) # Token
                     
-                    # Connect Token to Sentence
-                    edges.append((token_idx, sent_node_idx))
-                    edges.append((sent_node_idx, token_idx))
-                    
-                    # Connect Token to Next Token (Sequential)
-                    # if len(all_tokens) > 1 and node_types[-2] == 0:
-                    #     prev_idx = len(all_tokens) - 2
-                    #     edges.append((prev_idx, token_idx))
-                    #     edges.append((token_idx, prev_idx))
+                    # Connect Token to Sentence (Local Edge)
+                    edges.append((token_idx, sent_node_idx, 2))
+                    edges.append((sent_node_idx, token_idx, 2))
         
         # Truncate or Pad
         if len(all_tokens) > self.max_seq_len:
             all_tokens = all_tokens[:self.max_seq_len]
             node_types = node_types[:self.max_seq_len]
             # Filter edges
-            edges = [(u, v) for u, v in edges if u < self.max_seq_len and v < self.max_seq_len]
+            edges = [(u, v, t) for u, v, t in edges if u < self.max_seq_len and v < self.max_seq_len]
             
         seq_len = len(all_tokens)
         
@@ -99,21 +91,17 @@ class TextGraphBuilder:
         input_ids = torch.tensor(all_tokens, dtype=torch.long)
         node_types_tensor = torch.tensor(node_types, dtype=torch.long)
         
-        # Build Adjacency Matrix (Graph Mask)
-        # 1 means connected, 0 means not
+        # Build Adjacency Matrix (Graph Mask) with Edge Types
+        # 0 = No Connection
         adj = torch.zeros((seq_len, seq_len), dtype=torch.float)
         
-        # Add Self Loops
+        # Add Self Loops (Type 1)
         adj.fill_diagonal_(1.0)
         
         # Add Edges
-        for u, v in edges:
-            adj[u, v] = 1.0
+        for u, v, t in edges:
+            adj[u, v] = float(t)
             
-        # Also allow Causal connections for tokens?
-        # For Quantum Graph, we might want full visibility within the system.
-        # Let's keep it defined by the explicit edges for now.
-        
         return {
             "input_ids": input_ids,
             "node_types": node_types_tensor,
