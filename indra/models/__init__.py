@@ -3,6 +3,6 @@ Models module for IndraQuantum
 Contains quantum-inspired model architectures
 """
 
-from indra.models.quantum_core import IndraQuantum, ComplexLinear
+from indra.models.quantum_core import IndraQuantum, DenseComplexLinear
 
-__all__ = ["IndraQuantum", "ComplexLinear"]
+__all__ = ["IndraQuantum", "DenseComplexLinear"]
