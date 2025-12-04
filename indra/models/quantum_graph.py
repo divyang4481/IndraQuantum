@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
-from .quantum_core import ComplexLinear, complex_relu
+from .quantum_core import ComplexLinear, complex_relu, TensorTrainComplexLinear
 from .embedding import QuantumEmbedding
 
 class ComplexGraphAttentionLayer(nn.Module):
@@ -24,10 +24,10 @@ class ComplexGraphAttentionLayer(nn.Module):
         assert self.head_dim * n_heads == d_model, "d_model must be divisible by n_heads"
         
         # Complex Projections for Q, K, V
-        self.q_proj = ComplexLinear(d_model, d_model)
-        self.k_proj = ComplexLinear(d_model, d_model)
-        self.v_proj = ComplexLinear(d_model, d_model)
-        self.o_proj = ComplexLinear(d_model, d_model)
+        self.q_proj = TensorTrainComplexLinear(d_model, d_model, tt_rank=4)
+        self.k_proj = TensorTrainComplexLinear(d_model, d_model, tt_rank=4)
+        self.v_proj = TensorTrainComplexLinear(d_model, d_model, tt_rank=4)
+        self.o_proj = TensorTrainComplexLinear(d_model, d_model, tt_rank=4)
         
         # Edge Bias Refinement
         # We combine two separate biases:
@@ -39,8 +39,8 @@ class ComplexGraphAttentionLayer(nn.Module):
         # We can initialize them to something small or let them learn from 0.
         
         # FFN
-        self.ffn_1 = ComplexLinear(d_model, d_model * 4)
-        self.ffn_2 = ComplexLinear(d_model * 4, d_model)
+        self.ffn_1 = TensorTrainComplexLinear(d_model, d_model * 4, tt_rank=4)
+        self.ffn_2 = TensorTrainComplexLinear(d_model * 4, d_model, tt_rank=4)
         
         self.norm1 = nn.LayerNorm(d_model * 2)
         self.norm2 = nn.LayerNorm(d_model * 2)

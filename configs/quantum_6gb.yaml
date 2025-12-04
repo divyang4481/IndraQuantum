@@ -32,6 +32,9 @@ mixed_precision: true # Use mixed precision training (FP16)
 gradient_accumulation_steps: 1 # Accumulate gradients over N steps
 pin_memory: true # Pin memory for faster data transfer
 
+# Tensor Train Configuration
+tt_rank: 4 # TT-rank for linear layer decomposition (default 4 for massive compression)
+
 # Phase Shift Configuration (for graph module)
 num_phases: 8 # Number of learnable phase parameters
 use_graph: false # Enable graph-based phase computation
