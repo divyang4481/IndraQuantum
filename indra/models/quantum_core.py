@@ -275,6 +275,7 @@ class IndraQuantum(nn.Module):
         ])
         
         # Layer normalization (applied separately to real and imaginary parts)
+        # Layer normalization (applied separately to real and imaginary parts)
         self.layer_norms = nn.ModuleList([
             nn.LayerNorm(d_model * 2)
             for _ in range(n_layers)
@@ -283,7 +284,9 @@ class IndraQuantum(nn.Module):
         self.dropout = nn.Dropout(dropout)
         
         # Output projection to vocabulary
-        self.output_projection = nn.Linear(d_model * 2, vocab_size)
+        # Weight Tying: Share weights with embedding
+        self.output_projection = nn.Linear(d_model * 2, vocab_size, bias=False)
+        self.output_projection.weight = self.token_embedding.embedding.weight
         
         self.reset_parameters()
     
@@ -292,8 +295,8 @@ class IndraQuantum(nn.Module):
         # Embeddings are already initialized by QuantumEmbedding
         # nn.init.normal_(self.token_embedding.weight, std=0.02)
         # nn.init.normal_(self.position_embedding.weight, std=0.02)
-        nn.init.normal_(self.output_projection.weight, std=0.02)
-        nn.init.zeros_(self.output_projection.bias)
+        # Output projection weights are tied, so no need to init them separately
+        pass
     
     def forward(
         self,
