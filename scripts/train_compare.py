@@ -66,7 +66,8 @@ def train_model(
     d_model = 128      # Base dimension
     
     if model_type == "quantum":
-        student = IndraQuantum(vocab_size, d_model).to(device)
+        # Enable TT-Embeddings for extreme compression
+        student = IndraQuantum(vocab_size, d_model, config={'tt_rank': 4, 'use_tt_embeddings': True}).to(device)
     else:
         student = StandardBaseline(vocab_size, d_model).to(device)
         

@@ -264,8 +264,18 @@ class IndraQuantum(nn.Module):
         
         # Complex-valued embeddings (real and imaginary parts)
         # We use d_model * 2 to store both real and imaginary components
-        from .embedding import QuantumEmbedding
-        self.token_embedding = QuantumEmbedding(vocab_size, d_model)
+        # Complex-valued embeddings (real and imaginary parts)
+        # We use d_model * 2 to store both real and imaginary components
+        from .embedding import QuantumEmbedding, QuantumTTEmbedding
+        
+        use_tt = self.config.get('use_tt_embeddings', False)
+        tt_rank = self.config.get('tt_rank', 4)
+        
+        if use_tt:
+            self.token_embedding = QuantumTTEmbedding(vocab_size, d_model, tt_rank=tt_rank)
+        else:
+            self.token_embedding = QuantumEmbedding(vocab_size, d_model)
+            
         self.position_embedding = QuantumEmbedding(max_seq_length, d_model)
         
         # Quantum-inspired transformation layers
@@ -284,9 +294,15 @@ class IndraQuantum(nn.Module):
         self.dropout = nn.Dropout(dropout)
         
         # Output projection to vocabulary
-        # Weight Tying: Share weights with embedding
-        self.output_projection = nn.Linear(d_model * 2, vocab_size, bias=False)
-        self.output_projection.weight = self.token_embedding.embedding.weight
+        if use_tt:
+            # Use TT-Linear for output to maintain efficiency
+            # Maps Complex(d_model) -> Complex(vocab_size)
+            # We will take the magnitude (Born Rule) as the logit
+            self.output_projection = TensorTrainComplexLinear(d_model, vocab_size, bias=False, tt_rank=tt_rank)
+        else:
+            # Weight Tying: Share weights with embedding
+            self.output_projection = nn.Linear(d_model * 2, vocab_size, bias=False)
+            self.output_projection.weight = self.token_embedding.embedding.weight
         
         self.reset_parameters()
     
@@ -295,8 +311,13 @@ class IndraQuantum(nn.Module):
         # Embeddings are already initialized by QuantumEmbedding
         # nn.init.normal_(self.token_embedding.weight, std=0.02)
         # nn.init.normal_(self.position_embedding.weight, std=0.02)
-        # Output projection weights are tied, so no need to init them separately
-        pass
+        
+        if not self.config.get('use_tt_embeddings', False):
+            # Output projection weights are tied, so no need to init them separately
+            pass
+        else:
+            # TT output projection is initialized in its own __init__
+            pass
     
     def forward(
         self,
@@ -335,7 +356,18 @@ class IndraQuantum(nn.Module):
             x = self.dropout(x)
         
         # Project to vocabulary
-        logits = self.output_projection(x)
+        logits_complex = self.output_projection(x)
+        
+        if self.config.get('use_tt_embeddings', False):
+            # Born Rule Measurement: P = |psi|^2
+            # logits_complex is [B, S, vocab*2] (Real, Imag interleaved)
+            real, imag = torch.chunk(logits_complex, 2, dim=-1)
+            # We use magnitude as the logit score (before softmax)
+            # Note: Softmax(|z|^2) is the probability.
+            # So logits = |z|^2
+            logits = real**2 + imag**2
+        else:
+            logits = logits_complex
         
         return logits
     
