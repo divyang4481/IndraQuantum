@@ -24,7 +24,7 @@ def complex_relu(real: torch.Tensor, imag: torch.Tensor) -> Tuple[torch.Tensor, 
 
 
 
-class ComplexLinear(nn.Module):
+class DenseComplexLinear(nn.Module):
     """
     Complex-valued linear layer for quantum-inspired transformations.
     
@@ -38,7 +38,7 @@ class ComplexLinear(nn.Module):
     """
     
     def __init__(self, in_features: int, out_features: int, bias: bool = True):
-        super(ComplexLinear, self).__init__()
+        super(DenseComplexLinear, self).__init__()
         self.in_features = in_features
         self.out_features = out_features
         
@@ -98,7 +98,9 @@ class TensorTrainComplexLinear(nn.Module):
 
     Implements a 2-core Tensor Train decomposition on the Real and Imaginary
     weight matrices to drastically reduce parameter count.
-    Supports in_features/out_features of 128 and 512.
+    
+    The implementation dynamically factors the in/out features using a 2-core TT
+    approximation to replace the massive dense matrix W.
     """
 
     def __init__(self, in_features: int, out_features: int, bias: bool = True, tt_rank: int = 4):
@@ -107,19 +109,31 @@ class TensorTrainComplexLinear(nn.Module):
         self.out_features = out_features
         self.tt_rank = tt_rank
 
-        # Determine factors
-        self.d_in = self._get_factors(in_features)
-        self.d_out = self._get_factors(out_features)
+        # Determine optimal factorization for in_features and out_features
+        # We simplify the factorization to two cores: D = d1 * d2
+        # For D_model=128 (FNN, QKV) -> 16*8
+        # For D_model*4=512 (FFN Inner) -> 32*16
+        def get_factorization(D):
+            if D == 128: return [16, 8]
+            if D == 512: return [32, 16]
+            # General simple factorization (not optimal, but necessary for dynamic size)
+            if D % 16 == 0 and D > 16: return [16, D // 16]
+            return [D, 1]
+
+        self.d_in = get_factorization(in_features)
+        self.d_out = get_factorization(out_features)
         
         # TT Cores for Real Part (W_real approx G_1^R * G_2^R)
-        # G1_R shape: (1, d1', tt_rank, d1)
-        # G2_R shape: (tt_rank, d2', 1, d2)
-        self.G1_R = nn.Parameter(torch.Tensor(1, self.d_out[0], tt_rank, self.d_in[0]))
-        self.G2_R = nn.Parameter(torch.Tensor(tt_rank, self.d_out[1], 1, self.d_in[1]))
+        # G1_R shape: (r0, o1, r1, i1)
+        # G2_R shape: (r1, o2, rk, i2)
+        r0 = 1
+        rk = 1
+        self.G1_R = nn.Parameter(torch.Tensor(r0, self.d_out[0], tt_rank, self.d_in[0]))
+        self.G2_R = nn.Parameter(torch.Tensor(tt_rank, self.d_out[1], rk, self.d_in[1]))
 
         # TT Cores for Imaginary Part (W_imag approx G_1^I * G_2^I)
-        self.G1_I = nn.Parameter(torch.Tensor(1, self.d_out[0], tt_rank, self.d_in[0]))
-        self.G2_I = nn.Parameter(torch.Tensor(tt_rank, self.d_out[1], 1, self.d_in[1]))
+        self.G1_I = nn.Parameter(torch.Tensor(r0, self.d_out[0], tt_rank, self.d_in[0]))
+        self.G2_I = nn.Parameter(torch.Tensor(tt_rank, self.d_out[1], rk, self.d_in[1]))
 
         if bias:
             self.bias_real = nn.Parameter(torch.Tensor(out_features))
@@ -130,34 +144,22 @@ class TensorTrainComplexLinear(nn.Module):
         
         self.reset_parameters()
 
-    def _get_factors(self, dim: int):
-        if dim == 128:
-            return [16, 8]
-        elif dim == 512:
-            return [32, 16]
-        else:
-            # Fallback for other dimensions (simple heuristic or error)
-            # For now, let's try to find closest square
-            sqrt = int(math.sqrt(dim))
-            if dim % sqrt == 0:
-                return [dim // sqrt, sqrt]
-            raise ValueError(f"Unsupported dimension for TT-Linear: {dim}. Supported: 128, 512.")
-
     def _unfold_tt(self, G1, G2):
         # Reconstruct the full weight matrix W from the TT cores G1, G2
-        # W size: (D_out, D_in) = (d1'*d2', d1*d2)
-        
         # W_tt: (r0, o1, r1, i1) x (r1, o2, rk, i2) -> (r0, o1, o2, rk, i1, i2)
         # Using letters only for einsum compatibility:
         # a=r0, b=o1, c=r1, d=i1, e=o2, f=rk, g=i2
         W_tt = torch.einsum('abcd,cefg->abefdg', G1, G2)
         
-        # Reshape/flatten into (D_out, D_in)
-        W = W_tt.reshape(self.out_features, self.in_features)
+        D_out = self.d_out[0] * self.d_out[1]
+        D_in = self.d_in[0] * self.d_in[1]
+        
+        W = W_tt.reshape(D_out, D_in)
         return W
 
     def reset_parameters(self):
-        std = math.sqrt(2.0 / self.in_features)
+        # Initializing based on TT-rank (simplified)
+        std = math.sqrt(2.0 / (self.in_features * self.tt_rank))
         nn.init.uniform_(self.G1_R, -std, std)
         nn.init.uniform_(self.G2_R, -std, std)
         nn.init.uniform_(self.G1_I, -std, std)
@@ -175,7 +177,7 @@ class TensorTrainComplexLinear(nn.Module):
         # Split input into real and imaginary parts
         x_real, x_imag = torch.chunk(x, 2, dim=-1)
         
-        # Complex multiplication
+        # Complex multiplication: (a + bi)(c + di) = (ac - bd) + (ad + bc)i
         out_real = F.linear(x_real, W_real, self.bias_real) - \
                    F.linear(x_imag, W_imag, None)
         out_imag = F.linear(x_real, W_imag, self.bias_imag if self.bias_real is not None else None) + \
@@ -184,7 +186,9 @@ class TensorTrainComplexLinear(nn.Module):
         return torch.cat([out_real, out_imag], dim=-1)
 
     def get_num_params(self) -> int:
-        num_params_per_core = (self.G1_R.numel() + self.G2_R.numel())
+        num_params_per_core = (
+            self.G1_R.numel() + self.G2_R.numel()
+        )
         total_params = 2 * num_params_per_core
         if self.bias_real is not None:
             total_params += self.bias_real.numel() + self.bias_imag.numel()
@@ -192,6 +196,35 @@ class TensorTrainComplexLinear(nn.Module):
 
     def extra_repr(self) -> str:
         return f'in_features={self.in_features}, out_features={self.out_features}, tt_rank={self.tt_rank}, bias={self.bias_real is not None}'
+
+class CustomComplexLinear(nn.Module):
+    """
+    Adapter to switch between Tensor Train (efficient) and Dense (standard) Complex Linear layers.
+    """
+    def __init__(self, in_features, out_features, bias=True, config=None):
+        super().__init__()
+        self.config = config if config is not None else {}
+        tt_rank = self.config.get('tt_rank', 0)
+        
+        # Apply TT only if tt_rank > 0 and the dimensions match the designed TT structures
+        is_tt_compatible = (tt_rank > 0 and 
+                            ((in_features == 128 and out_features == 128) or 
+                             (in_features == 128 and out_features == 512) or
+                             (in_features == 512 and out_features == 128)))
+        
+        if is_tt_compatible:
+            self.layer = TensorTrainComplexLinear(in_features, out_features, bias=bias, tt_rank=tt_rank)
+        else:
+            self.layer = DenseComplexLinear(in_features, out_features, bias=bias)
+            
+    def forward(self, x):
+        return self.layer(x)
+        
+    def get_num_params(self) -> int:
+        if hasattr(self.layer, 'get_num_params'):
+            return self.layer.get_num_params()
+        else:
+            return sum(p.numel() for p in self.layer.parameters())
 
 
 class IndraQuantum(nn.Module):
@@ -237,7 +270,7 @@ class IndraQuantum(nn.Module):
         
         # Quantum-inspired transformation layers
         self.quantum_layers = nn.ModuleList([
-            TensorTrainComplexLinear(d_model, d_model, tt_rank=self.config.get('tt_rank', 4))
+            CustomComplexLinear(d_model, d_model, config=self.config)
             for _ in range(n_layers)
         ])
         

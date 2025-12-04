@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
-from .quantum_core import ComplexLinear, complex_relu, TensorTrainComplexLinear
+from .quantum_core import DenseComplexLinear, complex_relu, TensorTrainComplexLinear, CustomComplexLinear
 from .embedding import QuantumEmbedding
 
 class ComplexGraphAttentionLayer(nn.Module):
@@ -14,20 +14,21 @@ class ComplexGraphAttentionLayer(nn.Module):
     2. Edge Bias: Adds learned bias based on graph structure
     3. Complex FFN with CReLU
     """
-    def __init__(self, d_model, n_heads=4, dropout=0.1, local_window=16):
+    def __init__(self, d_model, n_heads=4, dropout=0.1, local_window=16, config=None):
         super().__init__()
         self.d_model = d_model
         self.n_heads = n_heads
         self.head_dim = d_model // n_heads
         self.local_window = local_window
+        self.config = config if config is not None else {}
         
         assert self.head_dim * n_heads == d_model, "d_model must be divisible by n_heads"
         
         # Complex Projections for Q, K, V
-        self.q_proj = TensorTrainComplexLinear(d_model, d_model, tt_rank=4)
-        self.k_proj = TensorTrainComplexLinear(d_model, d_model, tt_rank=4)
-        self.v_proj = TensorTrainComplexLinear(d_model, d_model, tt_rank=4)
-        self.o_proj = TensorTrainComplexLinear(d_model, d_model, tt_rank=4)
+        self.q_proj = CustomComplexLinear(d_model, d_model, config=self.config)
+        self.k_proj = CustomComplexLinear(d_model, d_model, config=self.config)
+        self.v_proj = CustomComplexLinear(d_model, d_model, config=self.config)
+        self.o_proj = CustomComplexLinear(d_model, d_model, config=self.config)
         
         # Edge Bias Refinement
         # We combine two separate biases:
@@ -39,8 +40,8 @@ class ComplexGraphAttentionLayer(nn.Module):
         # We can initialize them to something small or let them learn from 0.
         
         # FFN
-        self.ffn_1 = TensorTrainComplexLinear(d_model, d_model * 4, tt_rank=4)
-        self.ffn_2 = TensorTrainComplexLinear(d_model * 4, d_model, tt_rank=4)
+        self.ffn_1 = CustomComplexLinear(d_model, d_model * 4, config=self.config)
+        self.ffn_2 = CustomComplexLinear(d_model * 4, d_model, config=self.config)
         
         self.norm1 = nn.LayerNorm(d_model * 2)
         self.norm2 = nn.LayerNorm(d_model * 2)
@@ -170,10 +171,11 @@ class ComplexGraphAttentionLayer(nn.Module):
         return x
 
 class IndraQuantumGraph(nn.Module):
-    def __init__(self, vocab_size, d_model, n_layers=4, n_heads=4, dropout=0.1, max_seq_length=512):
+    def __init__(self, vocab_size, d_model, n_layers=4, n_heads=4, dropout=0.1, max_seq_length=512, config=None):
         super().__init__()
         self.d_model = d_model
         self.max_seq_length = max_seq_length
+        self.config = config if config is not None else {}
         
         # Embeddings
         self.token_embedding = QuantumEmbedding(vocab_size, d_model)
@@ -185,7 +187,7 @@ class IndraQuantumGraph(nn.Module):
         
         # Layers
         self.layers = nn.ModuleList([
-            ComplexGraphAttentionLayer(d_model, n_heads, dropout) for _ in range(n_layers)
+            ComplexGraphAttentionLayer(d_model, n_heads, dropout, config=self.config) for _ in range(n_layers)
         ])
         
         # Output Projection
