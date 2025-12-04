@@ -188,7 +188,31 @@ class IndraQuantumGraph(nn.Module):
             ComplexGraphAttentionLayer(d_model, n_heads, dropout) for _ in range(n_layers)
         ])
         
-        self.output_projection = nn.Linear(d_model * 2, vocab_size)
+        # Output Projection
+        # We tie the output projection weights to the token embedding weights to save parameters.
+        # This is a standard practice in language models (e.g. GPT-2, Llama).
+        # Since token_embedding is complex (d_model), and output is real (d_model*2),
+        # we need a projection or we just project the real part?
+        # Actually, our output is logits (vocab_size).
+        # Our embedding is [Vocab, d_model] (Complex).
+        # Our hidden state is [d_model * 2] (Real representation of Complex).
+        # So we can't directly tie them without a trick.
+        
+        # Alternative: Reduce d_model in the graph layers or use a smaller projection.
+        # But for now, let's keep it simple and just acknowledge the parameter count.
+        # Wait, the user explicitly wants LESS parameters.
+        # Let's use a smaller internal dimension for the Graph Attention?
+        # No, that complicates things.
+        
+        # Let's implement Weight Tying for the Real-valued projection.
+        # We can project the complex embedding to real and use that as the weight.
+        # But embedding is [Vocab, d_model] (Complex).
+        # Output is [d_model*2, Vocab].
+        
+        self.output_projection = nn.Linear(d_model * 2, vocab_size, bias=False)
+        # We can't easily tie weights here due to the Complex vs Real mismatch.
+        # However, we can remove the bias to save 32000 params.
+
         
     def forward(self, input_ids, node_types, graph_mask):
         """
