@@ -6,7 +6,8 @@ Defines the IndraQuantum model and ComplexLinear layer using PyTorch
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional, Tuple
+import math
+from typing import Optional, Tuple, Dict, Any
 
 def complex_relu(real: torch.Tensor, imag: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     """
@@ -91,6 +92,108 @@ class ComplexLinear(nn.Module):
         return f'in_features={self.in_features}, out_features={self.out_features}, bias={self.bias_real is not None}'
 
 
+class TensorTrainComplexLinear(nn.Module):
+    """
+    Tensor Train Complex-valued linear layer for quantum-inspired transformations.
+
+    Implements a 2-core Tensor Train decomposition on the Real and Imaginary
+    weight matrices to drastically reduce parameter count.
+    Supports in_features/out_features of 128 and 512.
+    """
+
+    def __init__(self, in_features: int, out_features: int, bias: bool = True, tt_rank: int = 4):
+        super(TensorTrainComplexLinear, self).__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+        self.tt_rank = tt_rank
+
+        # Determine factors
+        self.d_in = self._get_factors(in_features)
+        self.d_out = self._get_factors(out_features)
+        
+        # TT Cores for Real Part (W_real approx G_1^R * G_2^R)
+        # G1_R shape: (1, d1', tt_rank, d1)
+        # G2_R shape: (tt_rank, d2', 1, d2)
+        self.G1_R = nn.Parameter(torch.Tensor(1, self.d_out[0], tt_rank, self.d_in[0]))
+        self.G2_R = nn.Parameter(torch.Tensor(tt_rank, self.d_out[1], 1, self.d_in[1]))
+
+        # TT Cores for Imaginary Part (W_imag approx G_1^I * G_2^I)
+        self.G1_I = nn.Parameter(torch.Tensor(1, self.d_out[0], tt_rank, self.d_in[0]))
+        self.G2_I = nn.Parameter(torch.Tensor(tt_rank, self.d_out[1], 1, self.d_in[1]))
+
+        if bias:
+            self.bias_real = nn.Parameter(torch.Tensor(out_features))
+            self.bias_imag = nn.Parameter(torch.Tensor(out_features))
+        else:
+            self.register_parameter('bias_real', None)
+            self.register_parameter('bias_imag', None)
+        
+        self.reset_parameters()
+
+    def _get_factors(self, dim: int):
+        if dim == 128:
+            return [16, 8]
+        elif dim == 512:
+            return [32, 16]
+        else:
+            # Fallback for other dimensions (simple heuristic or error)
+            # For now, let's try to find closest square
+            sqrt = int(math.sqrt(dim))
+            if dim % sqrt == 0:
+                return [dim // sqrt, sqrt]
+            raise ValueError(f"Unsupported dimension for TT-Linear: {dim}. Supported: 128, 512.")
+
+    def _unfold_tt(self, G1, G2):
+        # Reconstruct the full weight matrix W from the TT cores G1, G2
+        # W size: (D_out, D_in) = (d1'*d2', d1*d2)
+        
+        # W_tt: (r0, o1, r1, i1) x (r1, o2, rk, i2) -> (r0, o1, o2, rk, i1, i2)
+        # Using letters only for einsum compatibility:
+        # a=r0, b=o1, c=r1, d=i1, e=o2, f=rk, g=i2
+        W_tt = torch.einsum('abcd,cefg->abefdg', G1, G2)
+        
+        # Reshape/flatten into (D_out, D_in)
+        W = W_tt.reshape(self.out_features, self.in_features)
+        return W
+
+    def reset_parameters(self):
+        std = math.sqrt(2.0 / self.in_features)
+        nn.init.uniform_(self.G1_R, -std, std)
+        nn.init.uniform_(self.G2_R, -std, std)
+        nn.init.uniform_(self.G1_I, -std, std)
+        nn.init.uniform_(self.G2_I, -std, std)
+
+        if self.bias_real is not None:
+            nn.init.zeros_(self.bias_real)
+            nn.init.zeros_(self.bias_imag)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Reconstruct weights on the fly 
+        W_real = self._unfold_tt(self.G1_R, self.G2_R)
+        W_imag = self._unfold_tt(self.G1_I, self.G2_I)
+
+        # Split input into real and imaginary parts
+        x_real, x_imag = torch.chunk(x, 2, dim=-1)
+        
+        # Complex multiplication
+        out_real = F.linear(x_real, W_real, self.bias_real) - \
+                   F.linear(x_imag, W_imag, None)
+        out_imag = F.linear(x_real, W_imag, self.bias_imag if self.bias_real is not None else None) + \
+                   F.linear(x_imag, W_real, None)
+        
+        return torch.cat([out_real, out_imag], dim=-1)
+
+    def get_num_params(self) -> int:
+        num_params_per_core = (self.G1_R.numel() + self.G2_R.numel())
+        total_params = 2 * num_params_per_core
+        if self.bias_real is not None:
+            total_params += self.bias_real.numel() + self.bias_imag.numel()
+        return total_params
+
+    def extra_repr(self) -> str:
+        return f'in_features={self.in_features}, out_features={self.out_features}, tt_rank={self.tt_rank}, bias={self.bias_real is not None}'
+
+
 class IndraQuantum(nn.Module):
     """
     IndraQuantum: A quantum-inspired language model optimized for low VRAM.
@@ -114,7 +217,8 @@ class IndraQuantum(nn.Module):
         n_layers: int = 4,
         n_heads: int = 4,
         dropout: float = 0.1,
-        max_seq_length: int = 512
+        max_seq_length: int = 512,
+        config: Optional[Dict[str, Any]] = None
     ):
         super(IndraQuantum, self).__init__()
         
@@ -123,6 +227,7 @@ class IndraQuantum(nn.Module):
         self.n_layers = n_layers
         self.n_heads = n_heads
         self.max_seq_length = max_seq_length
+        self.config = config if config is not None else {}
         
         # Complex-valued embeddings (real and imaginary parts)
         # We use d_model * 2 to store both real and imaginary components
@@ -132,7 +237,7 @@ class IndraQuantum(nn.Module):
         
         # Quantum-inspired transformation layers
         self.quantum_layers = nn.ModuleList([
-            ComplexLinear(d_model, d_model)
+            TensorTrainComplexLinear(d_model, d_model, tt_rank=self.config.get('tt_rank', 4))
             for _ in range(n_layers)
         ])
         
