@@ -94,7 +94,7 @@ def train_graph_model(epochs=1, batch_size=4, lr=3e-4):
     # TinyLlama has 32000. We added 2.
     vocab_size = 32002
     d_model = 128
-    model = IndraQuantumGraph(vocab_size, d_model).to(device)
+    model = IndraQuantumGraph(vocab_size, d_model, config={'tt_rank': 4}).to(device)
     print(f"Model Parameters: {model.get_num_params():,}")
     
     # Teacher (for KD)

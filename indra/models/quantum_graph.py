@@ -212,8 +212,7 @@ class IndraQuantumGraph(nn.Module):
         # Output is [d_model*2, Vocab].
         
         self.output_projection = nn.Linear(d_model * 2, vocab_size, bias=False)
-        # We can't easily tie weights here due to the Complex vs Real mismatch.
-        # However, we can remove the bias to save 32000 params.
+        self.output_projection.weight = self.token_embedding.embedding.weight
 
         
     def forward(self, input_ids, node_types, graph_mask):
