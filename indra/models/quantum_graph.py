@@ -178,7 +178,15 @@ class IndraQuantumGraph(nn.Module):
         self.config = config if config is not None else {}
         
         # Embeddings
-        self.token_embedding = QuantumEmbedding(vocab_size, d_model)
+        from .embedding import QuantumEmbedding, QuantumTTEmbedding
+        
+        use_tt = self.config.get('use_tt_embeddings', False)
+        tt_rank = self.config.get('tt_rank', 4)
+        
+        if use_tt:
+            self.token_embedding = QuantumTTEmbedding(vocab_size, d_model, tt_rank=tt_rank)
+        else:
+            self.token_embedding = QuantumEmbedding(vocab_size, d_model)
         self.position_embedding = QuantumEmbedding(max_seq_length, d_model)
         
         # Special Embeddings for Graph Nodes (Sentence, Para)
@@ -191,35 +199,17 @@ class IndraQuantumGraph(nn.Module):
         ])
         
         # Output Projection
-        # We tie the output projection weights to the token embedding weights to save parameters.
-        # This is a standard practice in language models (e.g. GPT-2, Llama).
-        # Since token_embedding is complex (d_model), and output is real (d_model*2),
-        # we need a projection or we just project the real part?
-        # Actually, our output is logits (vocab_size).
-        # Our embedding is [Vocab, d_model] (Complex).
-        # Our hidden state is [d_model * 2] (Real representation of Complex).
-        # So we can't directly tie them without a trick.
-        
-        # Alternative: Reduce d_model in the graph layers or use a smaller projection.
-        # But for now, let's keep it simple and just acknowledge the parameter count.
-        # Wait, the user explicitly wants LESS parameters.
-        # Let's use a smaller internal dimension for the Graph Attention?
-        # No, that complicates things.
-        
-        # Let's implement Weight Tying for the Real-valued projection.
-        # We can project the complex embedding to real and use that as the weight.
-        # But embedding is [Vocab, d_model] (Complex).
-        # Output is [d_model*2, Vocab].
-        
-        self.output_projection = nn.Linear(d_model * 2, vocab_size, bias=False)
-        self.output_projection.weight = self.token_embedding.embedding.weight
+        if use_tt:
+             self.output_projection = TensorTrainComplexLinear(d_model, vocab_size, bias=False, tt_rank=tt_rank)
+        else:
+             self.output_projection = nn.Linear(d_model * 2, vocab_size, bias=False)
+             self.output_projection.weight = self.token_embedding.embedding.weight
 
         
     def forward(self, input_ids, node_types, graph_mask):
         """
         Args:
             input_ids: [Batch, Seq]
-            node_types: [Batch, Seq]
             graph_mask: [Batch, Seq, Seq] (Edge Types)
         """
         seq_len = input_ids.size(1)
@@ -241,7 +231,14 @@ class IndraQuantumGraph(nn.Module):
             x = layer(x, graph_mask)
             
         # Output Projection
-        logits = self.output_projection(x)
+        logits_complex = self.output_projection(x)
+        
+        if self.config.get('use_tt_embeddings', False):
+            # Born Rule Measurement
+            real, imag = torch.chunk(logits_complex, 2, dim=-1)
+            logits = real**2 + imag**2
+        else:
+            logits = logits_complex
         
         return logits
 
