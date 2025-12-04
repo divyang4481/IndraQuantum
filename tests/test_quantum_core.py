@@ -7,7 +7,7 @@ import os
 # Add project root to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from indra.models.quantum_core import IndraQuantum, ComplexLinear
+from indra.models.quantum_core import IndraQuantum, DenseComplexLinear
 from indra.models.embedding import QuantumEmbedding
 from indra.graph.phase_shift import PhaseShift
 
@@ -20,14 +20,14 @@ class TestQuantumCore(unittest.TestCase):
         self.seq_len = 10
         
     def test_complex_linear(self):
-        print("\nTesting ComplexLinear Layer...")
-        layer = ComplexLinear(self.d_model, self.d_model)
+        print("\nTesting DenseComplexLinear Layer...")
+        layer = DenseComplexLinear(self.d_model, self.d_model)
         # Input shape: (batch, seq, d_model * 2)
         x = torch.randn(self.batch_size, self.seq_len, self.d_model * 2)
         output = layer(x)
         
         self.assertEqual(output.shape, (self.batch_size, self.seq_len, self.d_model * 2))
-        print("ComplexLinear shape check passed.")
+        print("DenseComplexLinear shape check passed.")
         
     def test_quantum_embedding(self):
         print("\nTesting QuantumEmbedding...")

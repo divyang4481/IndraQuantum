@@ -37,6 +37,14 @@ def train_model(
     device="cuda" if torch.cuda.is_available() else "cpu"
 ):
     print(f"=== Starting Training: {model_type.upper()} Model ===")
+    
+    if torch.cuda.is_available():
+        print(f"CUDA is available. Using GPU: {torch.cuda.get_device_name(0)}")
+        device = "cuda"
+    else:
+        print("CUDA is NOT available. Using CPU.")
+        device = "cpu"
+        
     print(f"Device: {device}")
     
     # 1. Load Data
