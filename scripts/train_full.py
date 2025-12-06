@@ -73,7 +73,7 @@ def train():
     EPOCHS = 50
     LR = 5e-4
     TT_RANK = 64
-    CHECKPOINT_DIR = "checkpoints/full_training_rank64"
+    CHECKPOINT_DIR = "checkpoints/full_training_rank64_optimized"
     DATA_PATH = "data/wikitext/train.pkl"
 
     if not os.path.exists(CHECKPOINT_DIR):
@@ -145,7 +145,7 @@ def train():
     mse_loss_fn = nn.MSELoss()
 
     # Setup CSV Logging
-    metrics_file = "logs/training_metrics_rank64.csv"
+    metrics_file = "logs/training_metrics_rank64_optimized.csv"
     if not os.path.exists(metrics_file):
         with open(metrics_file, "w", newline="") as f:
             writer = csv.writer(f)
@@ -186,15 +186,16 @@ def train():
             )
 
             # 2. KD Loss (Soft Labels)
-            T = 2.0
+            # Use T=1.0 to sharpen the teacher distribution (User Request)
+            T = 1.0
             loss_kd = kl_loss_fn(
                 torch.nn.functional.log_softmax(student_logits / T, dim=-1),
                 torch.nn.functional.softmax(teacher_logits / T, dim=-1),
             ) * (T * T)
 
             # Combined Loss
-            alpha = 0.5
-            loss = alpha * loss_ce + (1 - alpha) * loss_kd
+            # Strategy: Downweight KD significantly to let CE drive learning
+            loss = loss_ce + 0.01 * loss_kd
 
             loss.backward()
             optimizer.step()
