@@ -1,6 +1,6 @@
 # 🕸️ IndraQuantum
 
-> **"In the heaven of Indra, there is said to be a network of pearls, so arranged that if you look at one you see all the others reflected in it."** — *Avatamsaka Sutra*
+> **"In the heaven of Indra, there is said to be a network of pearls, so arranged that if you look at one you see all the others reflected in it."** — _Avatamsaka Sutra_
 
 **IndraQuantum** is a **Quantum-Inspired Language Model (QILM)** designed to bring extreme parameter efficiency to Natural Language Processing. By replacing standard vector embeddings with **Complex-Valued State Vectors** and utilizing **Tensor Network** decomposition, IndraQuantum achieves expressive power comparable to larger models while fitting on consumer hardware (e.g., 6GB VRAM).
 
@@ -15,8 +15,8 @@
 Standard Transformers treat tokens as static points in high-dimensional space. **IndraQuantum** treats them as **Quantum States** in a complex Hilbert space:
 
 1.  **Superposition (The Particle):** Tokens are encoded as complex numbers ($z = r e^{i\theta}$).
-    * **Magnitude ($r$):** Semantic meaning (e.g., "King").
-    * **Phase ($\theta$):** Structural context, rotated by the document graph.
+    - **Magnitude ($r$):** Semantic meaning (e.g., "King").
+    - **Phase ($\theta$):** Structural context, rotated by the document graph.
 2.  **Entanglement (The Graph):** Instead of standard positional encodings, we use **Graph-Induced Phase Shift**. Relationships between Paragraphs, Sentences, and Words create "interference patterns" that determine attention.
 3.  **Measurement (The Output):** The model predicts probabilities using the **Born Rule** ($P = |\psi|^2$), collapsing the complex state into real-valued logits compatible with standard LLMs.
 
@@ -24,10 +24,10 @@ Standard Transformers treat tokens as static points in high-dimensional space. *
 
 ## ⚡ Key Features
 
-* **Complex Embeddings:** 2x information density per parameter compared to real-valued floats.
-* **Tensor Train Decomposition:** Replaces massive Linear layers with efficient low-rank tensor networks, reducing parameters by **~10x**.
-* **Knowledge Distillation Bridge:** Trains a compact "Quantum Student" to mimic a massive "Classical Teacher" (e.g., Qwen-2.5, Llama-3) by aligning their probability distributions.
-* **Consumer Hardware Ready:** Designed specifically to train and run on GPUs with **<8GB VRAM**.
+- **Complex Embeddings:** 2x information density per parameter compared to real-valued floats.
+- **Tensor Train Decomposition:** Replaces massive Linear layers with efficient low-rank tensor networks, reducing parameters by **~10x**.
+- **Knowledge Distillation Bridge:** Trains a compact "Quantum Student" to mimic a massive "Classical Teacher" (e.g., Qwen-2.5, Llama-3) by aligning their probability distributions.
+- **Consumer Hardware Ready:** Designed specifically to train and run on GPUs with **<8GB VRAM**.
 
 ---
 
@@ -41,92 +41,48 @@ Standard Transformers treat tokens as static points in high-dimensional space. *
 
 ---
 
-## 🏛️ Complex Edge-Biased Attention
+## 🏛️ Current Architecture: The "Quantum Core"
 
-IndraQuantum uses a novel attention mechanism designed for both **Quantum-Inspired Expressivity** and **Hardware Efficiency**:
+IndraQuantum Phase 1 is built on three pillars of efficiency:
 
-### 1. The Quantum Core ($|Q^\dagger K|^2$)
-Instead of the standard dot product, we compute attention scores using the squared magnitude of the complex inner product. This mimics quantum interference, where "phase" (context) determines constructive or destructive interference between tokens.
+### 1. Complex State Space ($z = r e^{i\theta}$)
 
-### 2. Hardware-Efficient Topology
-We use an **Appended Topology** to organize the input sequence, ensuring compatibility with fast local-window operations (like FlashAttention):
+The model operates entirely in the complex domain.
 
-```mermaid
-graph LR
-    subgraph Text [Contiguous Text Tokens]
-        T1[Token 1] --- T2[Token 2] --- T3[Token 3] --- T4[...]
-    end
-    
-    subgraph Structure [Appended Structural Nodes]
-        S1[Sentence 1]
-        S2[Sentence 2]
-        P1[Paragraph 1]
-    end
-    
-    %% Connections
-    T1 -.-> S1
-    T2 -.-> S1
-    T3 -.-> S2
-    
-    S1 ==> P1
-    S2 ==> P1
-    
-    style Text fill:#e1f5fe,stroke:#01579b
-    style Structure fill:#f3e5f5,stroke:#4a148c
-```
+- **Why?** Complex numbers allow us to encode "Magnitude" (Semantic strength) and "Phase" (Relation/Context) in a single parameter, doubling information density.
+- **Implementation:** `QuantumTTEmbedding` creates these distinct real/imaginary components.
 
-*   **Tokens (0..N):** Represent the actual text. They are kept contiguous to allow efficient sliding window attention.
-*   **Structure (N..M):** Sentence and Paragraph nodes are appended at the end. They act as "global" routing nodes that attend to their constituent tokens.
+### 2. Born Rule Measurement
 
-### 3. Decoupled Edge Biases
-The attention scores are modulated by two distinct, additive biases:
+To interact with the real world (and standard loss functions), we project the final quantum state using the **Born Rule**:
+$$P(x) = | \psi(x) |^2$$
+This collapses the wavefunction into a probability distribution over the vocabulary.
 
-```mermaid
-flowchart TD
-    Input[Complex Input State] --> Q[Query Proj]
-    Input --> K[Key Proj]
-    
-    Q & K --> Attn{Complex Attention<br/>&#124;Q* K&#124;^2}
-    
-    subgraph Biases [Additive Biases]
-        LB[Local Window Bias<br/>Distance Mask]
-        HB[Hierarchy Bias<br/>Graph Edges]
-    end
-    
-    Biases --> Attn
-    
-    Attn --> Softmax[Softmax]
-    Softmax --> Output[Output State]
-    
-    style Attn fill:#fff9c4,stroke:#fbc02d
-    style Biases fill:#e0f2f1,stroke:#00695c
-```
+### 3. Tensor Train (TT) Compression
 
-*   **Local Window Bias:** A distance-based bias applied only to the contiguous text tokens. It enforces a strong local context (e.g., window size = 16), allowing the model to capture immediate syntactic dependencies efficiently.
-*   **Hierarchy Bias:** A learned bias applied to edges defined by the document graph (Token $\leftrightarrow$ Sentence $\leftrightarrow$ Paragraph). This allows the model to "jump" from a word to its sentence node and back to another word, enabling long-range reasoning without an expensive $O(N^2)$ global attention map.
+We factorize the massive embedding tables ($32000 \times 128$) into a chain of small 3rd-order tensors $G_1 \times G_2 \times G_3$.
+
+- **Result:** We achieve **~6-20x parameter reduction** compared to dense matrices, allowing us to train a 32k vocabulary model on a laptop.
 
 ---
 
 ## 🚀 Quick Start
 
 ### 1. Installation
+
 ```bash
 git clone https://github.com/divyang4481/IndraQuantum.git
 cd IndraQuantum
 pip install -r requirements.txt
 ```
 
-### 2. Training (Knowledge Distillation)
+### 2. Training (Phase 1: Knowledge Distillation)
 
-Train the Quantum Student using a pre-trained Classical Teacher. This script automatically handles the complex-to-real domain bridging.
+Train the Quantum Student using a pre-trained Teacher (TinyLlama). This script handles the complex-to-real bridging.
 
 ```bash
 # Optimized for 6GB VRAM
-python scripts/train_quantum.py \
-    --teacher "Qwen/Qwen2.5-0.5B-Instruct" \
-    --dataset "data/corpus.txt" \
-    --dim 128 \
-    --batch_size 4
+python scripts/train_full.py
 ```
 
 ### 3. Inference
@@ -134,9 +90,8 @@ python scripts/train_quantum.py \
 ```python
 from indra.models.quantum_core import IndraQuantum
 
-model = IndraQuantum.from_pretrained("checkpoints/indra_v1")
-output = model.generate("The nature of reality is")
-print(output)
+# Load your checkpoint
+# ...
 ```
 
 ---
@@ -155,32 +110,32 @@ IndraQuantum/
 │       ├── builder.py          # Builds document graph structure
 │       └── phase_shift.py      # Graph-to-phase translation
 ├── scripts/
-│   ├── train_quantum.py        # KD training entry point
-│   ├── train_graph.py          # Graph-enhanced training
-│   ├── train_compare.py        # Baseline vs quantum experiments
-│   ├── architecture_comparison.py
-│   ├── run_comparison.py
-│   ├── run_full_comparison.py
+│   ├── train_full.py           # Main Training Script (KD + CE)
+│   ├── analyze_trends.py       # Training Log Analysis
+│   ├── plot_loss.py            # Loss Visualization
+│   ├── test_checkpoint_oneshot.py # Rapid generation testing
 │   ├── prepare_data.py         # Dataset preprocessing helpers
-│   ├── setup_teacher.py        # Teacher-model bootstrap
-│   ├── test_kd_setup.py        # KD sanity checks
-│   └── demo_embedding_usage.py # Minimal embedding demo
+│   └── setup_teacher.py        # Teacher-model bootstrap
 ├── configs/
 │   └── quantum_6gb.yaml        # Default low-VRAM config
 ├── data/
 │   └── wikitext/
-│       ├── train.pkl
-│       ├── validation.pkl
-│       └── test.pkl
 ├── tests/
-│   ├── test_graph_layer.py
-│   └── test_quantum_core.py
 ├── checkpoints/
 ├── logs/
-├── notebooks/
 ├── plots/
 └── teacher_models/
 ```
+
+---
+
+## 🔮 Future Roadmap: Graph Integration
+
+While the current version achieves state-of-the-art efficiency using **Quantum Embeddings** and **Tensor Networks**, the next phase of IndraQuantum involves activating the **Graph Topology Layer**:
+
+1.  **Hierarchy Construction:** We will parse input text into a hierarchical graph (Word -> Sentence -> Paragraph).
+2.  **Phase-Shift Attention:** Instead of simple positional encoding, the "Distance" between tokens will be calculated as the **Shortest Path** on this graph.
+3.  **Long-Range Dependency:** This will allow the model to "hop" from the start of a document to the end via the Paragraph node in just 2 steps, enabling infinite-context reasoning with linear complexity.
 
 ---
 
@@ -188,9 +143,9 @@ IndraQuantum/
 
 This project is a novel synthesis of concepts from:
 
-* *RotatE: Knowledge Graph Embedding by Relational Rotation* (Sun et al., 2019)
-* *Quantum Knowledge Distillation for Large Language Models* (2025)
-* *Encoding Word Order in Complex Embeddings* (Wang et al., 2020)
+- _RotatE: Knowledge Graph Embedding by Relational Rotation_ (Sun et al., 2019)
+- _Quantum Knowledge Distillation for Large Language Models_ (2025)
+- _Encoding Word Order in Complex Embeddings_ (Wang et al., 2020)
 
 ---
 
@@ -198,4 +153,4 @@ This project is a novel synthesis of concepts from:
 
 We welcome explorers! If you are interested in **Quantum Machine Learning**, **Tensor Networks**, or **Efficient NLP**, please open an issue or PR.
 
-**"As above, so below."** — *The architecture of the cosmos, mirrored in code.*
+**"As above, so below."** — _The architecture of the cosmos, mirrored in code._
