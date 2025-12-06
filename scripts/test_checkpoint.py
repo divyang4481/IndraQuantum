@@ -1,82 +1,82 @@
-
 import torch
-import argparse
-import yaml
-import logging
 import sys
 import os
-
-# Add project root to path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
-from indra.models.quantum_core import IndraQuantum
+import argparse
 from transformers import AutoTokenizer
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from indra.models.quantum_core import IndraQuantum
 
-def load_config(config_path):
-    with open(config_path, 'r') as f:
-        return yaml.safe_load(f)
-
-def main():
-    parser = argparse.ArgumentParser(description='Test IndraQuantum Checkpoint')
-    parser.add_argument('--checkpoint', type=str, required=True, help='Path to checkpoint file')
-    parser.add_argument('--config', type=str, default='configs/quantum_6gb.yaml', help='Path to config file')
-    parser.add_argument('--tokenizer', type=str, default='gpt2', help='Tokenizer name')
-    parser.add_argument('--prompt', type=str, default="The quantum cat", help='Input prompt')
-    parser.add_argument('--max_new_tokens', type=int, default=50, help='Number of tokens to generate')
-    parser.add_argument('--temperature', type=float, default=0.8, help='Sampling temperature')
-    parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu')
+def chat(checkpoint_path, tt_rank=32):
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Loading checkpoint from {checkpoint_path}...")
     
-    args = parser.parse_args()
+    # Init Model
+    vocab_size = 32000
+    d_model = 128
+    config = {'tt_rank': tt_rank, 'use_tt_embeddings': True}
+    model = IndraQuantum(vocab_size, d_model, config=config).to(device)
     
-    logger.info(f"Loading config from {args.config}")
-    config = load_config(args.config)
-    
-    logger.info(f"Loading tokenizer: {args.tokenizer}")
-    tokenizer = AutoTokenizer.from_pretrained(args.tokenizer)
-    
-    logger.info("Initializing model...")
-    model = IndraQuantum(
-        vocab_size=config['vocab_size'],
-        d_model=config['d_model'],
-        n_layers=config['n_layers'],
-        n_heads=config['n_heads'],
-        dropout=config['dropout'],
-        max_seq_length=config['max_seq_length']
-    )
-    
-    logger.info(f"Loading checkpoint from {args.checkpoint}")
-    checkpoint = torch.load(args.checkpoint, map_location=args.device)
-    
-    # Handle both full checkpoint and state_dict only
-    if 'model_state_dict' in checkpoint:
-        state_dict = checkpoint['model_state_dict']
-    else:
-        state_dict = checkpoint
-        
-    model.load_state_dict(state_dict)
-    model.to(args.device)
+    # Load Weights
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
+    print("Model loaded successfully.")
     
-    logger.info(f"Generating text for prompt: '{args.prompt}'")
-    input_ids = tokenizer.encode(args.prompt, return_tensors='pt').to(args.device)
+    # Tokenizer
+    tokenizer = AutoTokenizer.from_pretrained("TinyLlama/TinyLlama-1.1B-Chat-v1.0")
     
-    generated_ids = model.generate(
-        input_ids,
-        max_new_tokens=args.max_new_tokens,
-        temperature=args.temperature,
-        top_k=50
-    )
-    
-    generated_text = tokenizer.decode(generated_ids[0], skip_special_tokens=True)
-    
-    print("\n" + "="*50)
-    print("GENERATED TEXT:")
-    print("="*50)
-    print(generated_text)
-    print("="*50 + "\n")
+    print("\n=== IndraQuantum Chat (Type 'exit' to quit) ===")
+    while True:
+        try:
+            user_input = input("User: ")
+            if user_input.lower() in ['exit', 'quit']:
+                break
+                
+            prompt = f"User: {user_input}\nAssistant:"
+            input_ids = tokenizer(prompt, return_tensors='pt').input_ids.to(device)
+            
+            generated = input_ids
+            # Generate
+            for _ in range(50):
+                with torch.no_grad():
+                    logits = model(generated)
+                    next_token_logits = logits[:, -1, :]
+                    # Top-k sampling
+                    top_k = 50
+                    probs = torch.nn.functional.softmax(next_token_logits, dim=-1)
+                    top_k_probs, top_k_indices = torch.topk(probs, top_k, dim=-1)
+                    next_token_idx = torch.multinomial(top_k_probs, 1)
+                    next_token = torch.gather(top_k_indices, -1, next_token_idx)
+                    
+                    # Debug: Print top choices
+                    # if _ == 0:
+                    #     print("\nTop 5 predictions:")
+                    #     for i in range(5):
+                    #         tok = tokenizer.decode([top_k_indices[0, i].item()])
+                    #         prob = top_k_probs[0, i].item()
+                    #         print(f"  '{tok}': {prob:.4f}")
+
+                    
+                    generated = torch.cat([generated, next_token], dim=1)
+                    if next_token.item() == tokenizer.eos_token_id:
+                        break
+            
+            output = tokenizer.decode(generated[0], skip_special_tokens=True)
+            # Extract just the assistant response
+            if "Assistant:" in output:
+                response = output.split("Assistant:")[-1].strip()
+            else:
+                response = output
+            print(f"Indra: {response}\n")
+            
+        except KeyboardInterrupt:
+            break
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("checkpoint", type=str, help="Path to checkpoint file")
+    parser.add_argument("--rank", type=int, default=32, help="TT Rank used in training")
+    args = parser.parse_args()
+    
+    chat(args.checkpoint, args.rank)

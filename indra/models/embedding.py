@@ -28,19 +28,16 @@ class QuantumEmbedding(nn.Module):
         # Phase theta ~ Uniform(0, 2pi)
         
         with torch.no_grad():
-            # Create temporary polar coords
-            r = torch.ones(self.num_embeddings, self.embedding_dim) + torch.randn(self.num_embeddings, self.embedding_dim) * 0.1
-            theta = torch.rand(self.num_embeddings, self.embedding_dim) * 2 * np.pi
+            # Initialize with more stable values
+            # Magnitude r ~ 1 (small variance)
+            r = torch.ones(self.num_embeddings, self.embedding_dim) + torch.randn(self.num_embeddings, self.embedding_dim) * 0.02
+            # Phase theta ~ Small random noise around 0 initially, to behave like real-valued
+            # This helps training start stable and then "drift" into complex space
+            theta = torch.randn(self.num_embeddings, self.embedding_dim) * 0.1
             
             # Convert to Cartesian
             real = r * torch.cos(theta)
             imag = r * torch.sin(theta)
-            
-            # Interleave: [real_0, imag_0, real_1, imag_1, ...]
-            # Easier way: Concatenate along last dim then view? 
-            # Our convention in the model is [real_part, imag_part] concatenated (d_model + d_model)
-            # Wait, check DenseComplexLinear: it expects torch.chunk(x, 2, dim=-1)
-            # So the first half is Real, second half is Imag.
             
             weight = torch.cat([real, imag], dim=-1)
             self.embedding.weight.data.copy_(weight)
