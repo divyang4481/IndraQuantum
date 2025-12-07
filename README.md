@@ -66,6 +66,32 @@ We factorize the massive embedding tables ($32000 \times 128$) into a chain of s
 
 ---
 
+## 📊 Performance Benchmarks & Targets
+
+We are attempting to break the scaling laws by substituting parameter count with complex-valued expressivity. Here are the targets:
+
+| Model Scale               | CE Loss (Nat)  | Perplexity   | Quality / Capability                       |
+| :------------------------ | :------------- | :----------- | :----------------------------------------- |
+| **6B - 7B** (Llama 3)     | **~1.8 - 2.2** | **~6 - 9**   | Fluent, reasoning, coding, nuance.         |
+| **1B - 1.5B** (TinyLlama) | **~2.4 - 2.8** | **~11 - 16** | Fluent English, basic facts, simple logic. |
+| **Indra Goal** (V1)       | **~3.5 - 4.0** | **~33 - 54** | Grammatically correct, stays on topic.     |
+| **Indra Current** (Ep 30) | **~4.81**      | **~122**     | Learning grammar and vocabulary.           |
+
+---
+
+## 🧪 The Quantum Hypothesis
+
+**Can a sub-1M parameter model beat the scaling laws?**
+
+Standard "Scaling Laws" dictate that a model with <1M parameters (like Indra) implies a capacity ceiling of roughly **CE ~4.0**. However, IndraQuantum tests the following hypothesis:
+
+> **Hypothesis:** By operating in Complex Space ($\mathbb{C}$), each parameter stores $>2\times$ the information (Magnitude + Phase) and enables **Superposition**, allowing the model to "collapse" onto the correct meaning based on context.
+
+If correct, this "Quantum Advantage" should allow IndraQuantum to punch far above its weight class, potentially approaching the **CE ~2.8** range of 1B models while remaining 1000x smaller.
+Phase 2 ("Semantic Distillation") is designed specifically to force the model to utilize this latent phase capacity.
+
+---
+
 ## 🚀 Quick Start
 
 ### 1. Installation
