@@ -15,8 +15,9 @@ class SemanticDistillationLoss(nn.Module):
         self.temperature = temperature
 
         self.ce = nn.CrossEntropyLoss()
-        self.mse = nn.MSELoss()
-        self.kl = nn.KLDivLoss(reduction="batchmean")
+        # Use reduction='none' to handle masking manually
+        self.mse = nn.MSELoss(reduction="none")
+        self.kl = nn.KLDivLoss(reduction="none")
 
     def normalize_entropy(self, log_probs):
         """
@@ -27,6 +28,8 @@ class SemanticDistillationLoss(nn.Module):
         p = torch.exp(log_probs)
         entropy = -torch.sum(p * log_probs, dim=-1)
         max_entropy = math.log(log_probs.size(-1))
+        # Clamp for numerical stability
+        entropy = torch.clamp(entropy, min=1e-8, max=max_entropy)
         return entropy / max_entropy
 
     def forward(
@@ -42,51 +45,71 @@ class SemanticDistillationLoss(nn.Module):
         # Ensure teacher logits are float32 for stability in loss calculation
         teacher_logits = teacher_logits.float()
 
+        # Create Mask for Padding (targets are -100 for padding)
+        # Flatten everything for easier masking
+        batch_size, seq_len, vocab_size = student_logits.shape
+        flat_targets = targets.view(-1)
+        mask = (flat_targets != -100).float()
+        num_valid = mask.sum()
+
+        if num_valid == 0:
+            return torch.tensor(
+                0.0, device=student_logits.device, requires_grad=True
+            ), {
+                "ce": 0.0,
+                "kd": 0.0,
+                "phase": 0.0,
+                "mag": 0.0,
+                "kd_w": 0.0,
+                "aux_w": 0.0,
+            }
+
         # 1. Predictive Loss (Cross-Entropy)
-        loss_ce = self.ce(
-            student_logits.view(-1, student_logits.size(-1)), targets.view(-1)
-        )
+        # CrossEntropyLoss already handles ignore_index=-100
+        loss_ce = self.ce(student_logits.view(-1, vocab_size), flat_targets)
 
         # 2. Adaptive Weights (Curriculum Learning)
-        # Ramp up KD/Phase/Mag influence over time
         progress = current_epoch / total_epochs
-        # KD: 0.01 -> 0.2
-        kd_weight = 0.01 + (progress * 0.19)
-        # Aux: 0.0 -> 0.1 (Don't confuse early training)
+
+        # KD: 0.01 -> 0.05 (Strictly clamped)
+        kd_weight = 0.01 + (progress * 0.04)
+        kd_weight = min(0.05, max(0.01, kd_weight))
+
+        # Aux: 0.0 -> 0.1
+        # Starts ramping at 20% progress. Max value is (1.0 - 0.2) * 0.125 = 0.1
         aux_weight = max(0.0, (progress - 0.2) * 0.125) if progress > 0.2 else 0.0
 
-        # 3. Imitative Loss (KD)
+        # Teacher Probs
         T = self.temperature
         with torch.no_grad():
             teacher_probs = F.softmax(teacher_logits / T, dim=-1)
             teacher_log_probs = F.log_softmax(teacher_logits / T, dim=-1)
 
-        loss_kd = self.kl(F.log_softmax(student_logits / T, dim=-1), teacher_probs) * (
-            T * T
-        )
+        # 3. Imitative Loss (KD)
+        # Calculate KL for all, then mask
+        s_log_probs = F.log_softmax(student_logits / T, dim=-1)
+
+        # KL reduction='none' returns (B, T, V). Sum over V (dim=-1) to get token-level KL
+        kl_per_token = self.kl(s_log_probs, teacher_probs).sum(dim=-1)  # (B, T)
+        loss_kd = (kl_per_token.view(-1) * mask).sum() / num_valid * (T * T)
 
         # 4. Certainty Loss (Phase)
-        # Map Teacher Entropy -> Target Phase (0 to pi)
-        # Low Entropy (Confident) -> Phase 0
-        # High Entropy (Confused) -> Phase pi
         with torch.no_grad():
             norm_H = self.normalize_entropy(teacher_log_probs)  # (B, T)
             target_phase = norm_H * math.pi
 
-        # Student phase is (B, T, D) -> Take mean over dim to get "Token Phase"
-        # Or should we match distribution? Mean is safer for now.
         student_avg_phase = torch.mean(torch.abs(student_phase), dim=-1)  # (B, T)
-        loss_phase = self.mse(student_avg_phase, target_phase)
+        loss_phase_raw = self.mse(student_avg_phase, target_phase)  # (B, T)
+        loss_phase = (loss_phase_raw.view(-1) * mask).sum() / num_valid
 
         # 5. Salience Loss (Magnitude)
-        # Map Teacher Max Prob (Confidence) -> Target Magnitude
-        # High Conf -> High Mag
         with torch.no_grad():
             max_prob, _ = torch.max(teacher_probs, dim=-1)  # (B, T)
-            target_mag = max_prob * 5.0  # Scale to reasonable embedding mag range
+            target_mag = max_prob * 5.0
 
         student_avg_mag = torch.mean(student_mag, dim=-1)  # (B, T)
-        loss_mag = self.mse(student_avg_mag, target_mag)
+        loss_mag_raw = self.mse(student_avg_mag, target_mag)  # (B, T)
+        loss_mag = (loss_mag_raw.view(-1) * mask).sum() / num_valid
 
         # Total
         total_loss = (

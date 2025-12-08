@@ -1,82 +1,69 @@
 import torch
 import sys
 import os
-import argparse
 from transformers import AutoTokenizer
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from indra.models.quantum_core import IndraQuantum
+# Add project root
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from indra.models.quantum_model_v2 import IndraQuantumPhase2
 
-def chat(checkpoint_path, tt_rank=32):
+
+def test_generation():
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Loading checkpoint from {checkpoint_path}...")
-    
-    # Init Model
+    print(f"Using device: {device}")
+
+    # Load Model
     vocab_size = 32000
     d_model = 128
-    config = {'tt_rank': tt_rank, 'use_tt_embeddings': True}
-    model = IndraQuantum(vocab_size, d_model, config=config).to(device)
-    
-    # Load Weights
-    checkpoint = torch.load(checkpoint_path, map_location=device)
-    model.load_state_dict(checkpoint['model_state_dict'])
-    model.eval()
-    print("Model loaded successfully.")
-    
-    # Tokenizer
-    tokenizer = AutoTokenizer.from_pretrained("TinyLlama/TinyLlama-1.1B-Chat-v1.0")
-    
-    print("\n=== IndraQuantum Chat (Type 'exit' to quit) ===")
-    while True:
-        try:
-            user_input = input("User: ")
-            if user_input.lower() in ['exit', 'quit']:
-                break
-                
-            prompt = f"User: {user_input}\nAssistant:"
-            input_ids = tokenizer(prompt, return_tensors='pt').input_ids.to(device)
-            
-            generated = input_ids
-            # Generate
-            for _ in range(50):
-                with torch.no_grad():
-                    logits = model(generated)
-                    next_token_logits = logits[:, -1, :]
-                    # Top-k sampling
-                    top_k = 50
-                    probs = torch.nn.functional.softmax(next_token_logits, dim=-1)
-                    top_k_probs, top_k_indices = torch.topk(probs, top_k, dim=-1)
-                    next_token_idx = torch.multinomial(top_k_probs, 1)
-                    next_token = torch.gather(top_k_indices, -1, next_token_idx)
-                    
-                    # Debug: Print top choices
-                    # if _ == 0:
-                    #     print("\nTop 5 predictions:")
-                    #     for i in range(5):
-                    #         tok = tokenizer.decode([top_k_indices[0, i].item()])
-                    #         prob = top_k_probs[0, i].item()
-                    #         print(f"  '{tok}': {prob:.4f}")
+    model = IndraQuantumPhase2(vocab_size, d_model).to(device)
 
-                    
-                    generated = torch.cat([generated, next_token], dim=1)
-                    if next_token.item() == tokenizer.eos_token_id:
-                        break
-            
-            output = tokenizer.decode(generated[0], skip_special_tokens=True)
-            # Extract just the assistant response
-            if "Assistant:" in output:
-                response = output.split("Assistant:")[-1].strip()
-            else:
-                response = output
-            print(f"Indra: {response}\n")
-            
-        except KeyboardInterrupt:
-            break
+    checkpoint_path = "checkpoints/phase2_v4_unified/checkpoint_v4_epoch_1.pt"
+    if len(sys.argv) > 1:
+        checkpoint_path = sys.argv[1]
+
+    if not os.path.exists(checkpoint_path):
+        print(f"Checkpoint not found: {checkpoint_path}")
+        print("Please wait for Epoch 1 to complete or specify a valid checkpoint.")
+        return
+
+    print(f"Loading checkpoint: {checkpoint_path}")
+    ckpt = torch.load(checkpoint_path, map_location=device)
+    model.load_state_dict(ckpt["model_state_dict"])
+    model.eval()
+
+    tokenizer = AutoTokenizer.from_pretrained("TinyLlama/TinyLlama-1.1B-Chat-v1.0")
+
+    prompts = [
+        "Explain quantum mechanics in simple terms:",
+        "The meaning of life is",
+        "def fibonacci(n):",
+        "Below is an instruction that describes a task. Write a response that appropriately completes the request.\n\n### Instruction:\nWrite a poem about AI.\n\n### Response:",
+    ]
+
+    for p in prompts:
+        input_ids = tokenizer.encode(p, return_tensors="pt").to(device)
+        print(f"\nPrompt: {p.strip()}")
+
+        # Generate
+        with torch.no_grad():
+            output_ids = input_ids.clone()
+            for _ in range(100):  # Max 100 new tokens
+                outputs, _, _ = model(
+                    output_ids,
+                    attention_mask=(output_ids != tokenizer.pad_token_id).long(),
+                )
+                # outputs is (logits, mag, phase)
+                # logits: (B, T, V)
+                next_token_logits = outputs[:, -1, :]
+                next_token = torch.argmax(next_token_logits, dim=-1)
+
+                output_ids = torch.cat([output_ids, next_token.unsqueeze(-1)], dim=-1)
+                if next_token.item() == tokenizer.eos_token_id:
+                    break
+
+        gen_text = tokenizer.decode(output_ids[0], skip_special_tokens=True)
+        print(f"Generated:\n{gen_text}\n{'-'*40}")
+
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("checkpoint", type=str, help="Path to checkpoint file")
-    parser.add_argument("--rank", type=int, default=32, help="TT Rank used in training")
-    args = parser.parse_args()
-    
-    chat(args.checkpoint, args.rank)
+    test_generation()

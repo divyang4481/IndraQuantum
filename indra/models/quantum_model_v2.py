@@ -36,7 +36,7 @@ class IndraQuantumPhase2(nn.Module):
         # 3. Hybrid Output
         self.output_layer = HybridOutput(d_model, vocab_size, self.token_embedding)
 
-    def forward(self, input_ids):
+    def forward(self, input_ids, attention_mask=None):
         B, T = input_ids.shape
 
         # Embed
@@ -56,17 +56,33 @@ class IndraQuantumPhase2(nn.Module):
         real = mag * torch.cos(phase)
         imag = mag * torch.sin(phase)
 
-        real = real + pos_emb  # Add pos info to real component
+        # Apply position embedding to both components to distribute position info uniformly
+        # preventing bias toward the real axis
+        real = real + pos_emb
+        imag = imag + pos_emb
 
         # Process Layers
+        # We need to reshape mask for attention: (B, 1, 1, T) or (B, 1, T, T) for causal?
+        # The complex attention expects (B, 1, 1, T) usually for padding mask.
+        if attention_mask is not None:
+            # Mask is (B, T) with 1 for token, 0 for pad
+            # Expand to (B, 1, 1, T) for broadcasting over heads and query length
+            mask = attention_mask.view(B, 1, 1, T)
+        else:
+            mask = None
+
         for layer in self.layers:
-            real, imag = layer(real, imag)
+            real, imag = layer(real, imag, mask=mask)
 
         # Output
         logits = self.output_layer(real, imag)
 
-        # Return everything needed for loss
-        return logits, mag, phase
+        # Return final mag/phase from transformed hidden state, not embedding
+        # This is what the loss function should supervise
+        final_mag = torch.sqrt(real**2 + imag**2 + 1e-6)
+        final_phase = torch.atan2(imag, real)
+
+        return logits, final_mag, final_phase
 
     def get_num_params(self):
         return sum(p.numel() for p in self.parameters())
@@ -91,9 +107,9 @@ class ComplexLayer(nn.Module):
         self.norm2_real = nn.LayerNorm(d_model)
         self.norm2_imag = nn.LayerNorm(d_model)
 
-    def forward(self, r, i):
+    def forward(self, r, i, mask=None):
         # Attention
-        ar, ai = self.attn(r, i)
+        ar, ai = self.attn(r, i, mask=mask)
         r = self.norm1_real(r + ar)
         i = self.norm1_imag(i + ai)
 
