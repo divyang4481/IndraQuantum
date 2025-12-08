@@ -3,6 +3,15 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+@torch.jit.script
+def _compute_geometry(
+    raw_mag: torch.Tensor, raw_phase: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
+    M = F.softplus(raw_mag) + 1e-4
+    E_real = M * torch.cos(raw_phase)
+    return M, E_real
+
+
 class HybridOutput(nn.Module):
     """
     Hybrid Output Layer:
@@ -16,7 +25,7 @@ class HybridOutput(nn.Module):
         self.embedding = embedding_layer  # Reference to ComplexEmbeddingV2
 
         # Trainable mixing weight (alpha)
-        self.alpha = nn.Parameter(torch.tensor(0.5))
+        self.alpha = nn.Parameter(torch.tensor(0.001))
 
         # Projection for "Meaning" (Real part alignment)
         self.proj_real = nn.Linear(d_model, d_model)
@@ -32,10 +41,13 @@ class HybridOutput(nn.Module):
         # E_mag = M
 
         # Accessing raw weights directly and computing geometry
-        # This is expensive if done per batch if vocab is massive, but for 32k it's okay.
-        M = F.softplus(self.embedding.raw_mag.weight) + 1e-4
-        P = self.embedding.raw_phase.weight
-        E_real = M * torch.cos(P)
+        # Optimized with JIT to fuse kernels
+        #   M = F.softplus(self.embedding.raw_mag.weight) + 1e-4
+        # P = self.embedding.raw_phase.weight
+        # E_real = M * torch.cos(P)
+        M, E_real = _compute_geometry(
+            self.embedding.raw_mag.weight, self.embedding.raw_phase.weight
+        )
         # E_imag = M * torch.sin(P) # Not used for output projection currently
 
         # 3. Channel 1: Real Predictive Match
@@ -49,6 +61,9 @@ class HybridOutput(nn.Module):
         logits_mag = torch.matmul(h_mag, M.t())
 
         # 5. Combine
-        logits = logits_real + (self.alpha * logits_mag)
+        # Use softplus to enforce positivity while maintaining smooth gradients
+        # abs() has zero gradient at 0 and flips sign, causing instability
+        alpha_positive = F.softplus(self.alpha) + 1e-4
+        logits = logits_real + (alpha_positive * logits_mag)
 
         return logits

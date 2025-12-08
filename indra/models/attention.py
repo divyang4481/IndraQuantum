@@ -75,8 +75,38 @@ class ComplexAttention(nn.Module):
         # Scale
         score_real = score_real / math.sqrt(self.head_dim)
 
+        # MASKING
+        # 1. Causal Mask (Prevent cheating) - Shape (T, T)
+        # We want to mask positions where j > i (future)
+        causal_mask = torch.triu(
+            torch.ones(T, T, device=score_real.device), diagonal=1
+        ).bool()
+
+        # 2. Padding Mask handling
+        # mask input is typically (B, 1, 1, T) or similar.
+        # We need a combined mask of shape (B, 1, T, T) or (B, H, T, T)
+
+        # Start with 0 (keep)
+        extended_mask = torch.zeros(
+            B, 1, T, T, device=score_real.device, dtype=torch.bool
+        )
+
+        # Apply Causal (Broadcasts to B)
+        # causal_mask is (T, T), triggers broadcasting
+        extended_mask = extended_mask | causal_mask.unsqueeze(0).unsqueeze(0)
+
+        # Apply Padding (if provided)
         if mask is not None:
-            score_real = score_real.masked_fill(mask == 0, float("-inf"))
+            # mask is (B, 1, 1, T) -> 1=valid, 0=pad
+            # We want to MASK (set to True) where mask == 0 (pad)
+            # Invert mask: (mask == 0) gives True for pads
+            pad_mask = mask == 0  # (B, 1, 1, T)
+            # Expand to (B, 1, T, T): padding is on KEYS (last dim)
+            # Each padded key position should be masked for ALL query positions
+            pad_mask = pad_mask.expand(B, 1, T, T)
+            extended_mask = extended_mask | pad_mask
+
+        score_real = score_real.masked_fill(extended_mask, float("-inf"))
 
         attn = F.softmax(score_real, dim=-1)
 
