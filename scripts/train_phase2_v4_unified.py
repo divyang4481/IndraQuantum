@@ -11,6 +11,7 @@ import logging
 from tqdm import tqdm
 from transformers import AutoTokenizer
 import csv
+import numpy as np
 
 # Add project root
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -49,6 +50,71 @@ class SimpleDataset(Dataset):
         }
 
 
+class PrecomputedDataset(Dataset):
+    def __init__(self, data, logits_dir):
+        self.data = data
+        self.logits_dir = logits_dir
+
+        # Load Memmaps
+        n_samples = len(data)
+        # We assume shape (N, 512, 100) - check files or assume based on precompute script
+        # To be safe, we try to detect, but we know what we wrote: float16/int16
+        # If file doesn't exist, we error out (this class shouldn't be used then)
+
+        val_path = os.path.join(logits_dir, "logits_values.npy")
+        ind_path = os.path.join(logits_dir, "logits_indices.npy")
+
+        if os.path.exists(val_path) and os.path.exists(ind_path):
+            self.vals = np.memmap(
+                val_path, dtype="float16", mode="r", shape=(n_samples, 1024, 100)
+            )
+            self.inds = np.memmap(
+                ind_path, dtype="int16", mode="r", shape=(n_samples, 1024, 100)
+            )
+            self.has_logits = True
+        else:
+            logging.error("Precomputed logit files not found!")
+            raise FileNotFoundError("Logit files missing")
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        item = self.data[idx]
+        # Get tensors
+        input_ids = torch.tensor(item["input_ids"], dtype=torch.long)
+        attention_mask = torch.tensor(item["attention_mask"], dtype=torch.long)
+
+        ret = {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+        }
+
+        if self.has_logits:
+            # Slices from memmap
+            # Note: Input data might be shorter than 512 if not padded?
+            # But precompute assumed 512.
+            # We explicitly slice or pad if needed, but usually we just take what's there.
+            # We'll assume the memmap matches the hardcoded 1024 seq_len.
+            v = self.vals[idx]
+            i = self.inds[idx]
+
+            # If input_ids is smaller than 1024, we should slice?
+            # Or assume training data is fixed 1024.
+            # Let's slice to match input_ids length to be safe.
+            seq_len = input_ids.size(0)
+            if seq_len < 1024:
+                v = v[:seq_len]
+                i = i[:seq_len]
+
+            ret["logit_values"] = torch.from_numpy(
+                v.copy()
+            )  # copy to avoid negative strides issues sometimes
+            ret["logit_indices"] = torch.from_numpy(i.copy()).long()
+
+        return ret
+
+
 def find_latest_checkpoint(checkpoint_dir):
     checkpoints = glob.glob(os.path.join(checkpoint_dir, "checkpoint_v4_epoch_*.pt"))
     if not checkpoints:
@@ -65,11 +131,15 @@ def find_latest_checkpoint(checkpoint_dir):
 
 def train():
     # Configuration
-    BATCH_SIZE = 64
+    BATCH_SIZE = 4
     EPOCHS = 20
     LR = 3e-4  # Standard training rate
     CHECKPOINT_DIR = "checkpoints/phase2_v4_unified"
     DATA_PATH = "data/mixed_train.pkl"  # Mixed Data (Wiki + Alpaca)
+
+    # Optimization Config
+    USE_PRECOMPUTED = True
+    LOGITS_DIR = "data/precomputed_logits_v2"
 
     if not os.path.exists(CHECKPOINT_DIR):
         os.makedirs(CHECKPOINT_DIR)
@@ -87,7 +157,19 @@ def train():
 
     with open(DATA_PATH, "rb") as f:
         train_data = pickle.load(f)
-    dataset = SimpleDataset(train_data)
+
+    # Check if we can use precomputed dataset
+    use_fast_loader = False
+    if USE_PRECOMPUTED and os.path.exists(
+        os.path.join(LOGITS_DIR, "logits_values.npy")
+    ):
+        logging.info("Using Precomputed Logits Dataset (Fast Mode)")
+        dataset = PrecomputedDataset(train_data, LOGITS_DIR)
+        use_fast_loader = True
+    else:
+        logging.info("Using Standard Dataset (Live Inference Mode)")
+        dataset = SimpleDataset(train_data)
+
     loader = DataLoader(
         dataset, batch_size=BATCH_SIZE, shuffle=True, pin_memory=True, num_workers=0
     )
@@ -99,11 +181,15 @@ def train():
     d_model = 128
     student = IndraQuantumPhase2(vocab_size, d_model).to(device)
 
-    # 3. Load Teacher
-    logging.info("Loading Teacher...")
-    teacher, _ = setup_teacher_model("TinyLlama/TinyLlama-1.1B-Chat-v1.0")
-    teacher = teacher.to(device)
-    teacher.eval()
+    # 3. Load Teacher (Only if not using precomputed)
+    teacher = None
+    if not use_fast_loader:
+        logging.info("Loading Teacher...")
+        teacher, _ = setup_teacher_model("TinyLlama/TinyLlama-1.1B-Chat-v1.0")
+        teacher = teacher.to(device)
+        teacher.eval()
+    else:
+        logging.info("Teacher skipped (using precomputed logits).")
 
     # 4. Optimizer
     optimizer = optim.AdamW(student.parameters(), lr=LR)
@@ -121,7 +207,7 @@ def train():
         logging.info(f"Resuming from checkpoint: {latest_ckpt}")
         try:
             checkpoint = torch.load(latest_ckpt, map_location=device)
-            student.load_state_dict(checkpoint["model_state_dict"])
+            student.load_state_dict(checkpoint["model_state_dict"], strict=False)
             if "optimizer_state_dict" in checkpoint:
                 optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
             if "scheduler_state_dict" in checkpoint:
@@ -182,17 +268,32 @@ def train():
                     input_ids, attention_mask=attention_mask
                 )
 
-                # Forward Teacher
-                with torch.no_grad():
-                    t_out = teacher(input_ids)
-                    t_logits = t_out.logits
+                # Fetch Teacher Logits
+                if use_fast_loader:
+                    # Reconstruct from Top-K
+                    vals = batch["logit_values"].to(device, non_blocking=True).float()
+                    inds = batch["logit_indices"].to(device, non_blocking=True)
+
+                    # Create full sparse tensor
+                    # Fill with large negative value for ignored positions
+                    t_logits = torch.full(
+                        (s_logits.size(0), s_logits.size(1), 32000),
+                        -100.0,
+                        device=device,
+                    )
+                    t_logits.scatter_(2, inds, vals)
+                else:
+                    # Forward Teacher (Live)
+                    with torch.no_grad():
+                        t_out = teacher(input_ids)
+                        t_logits = t_out.logits
 
                 # Shift
                 s_logits_shift = s_logits[:, :-1, :].contiguous()
                 s_mag_shift = s_mag[:, :-1, :].contiguous()
                 s_phase_shift = s_phase[:, :-1, :].contiguous()
                 t_logits_shift = t_logits[:, :-1, :].contiguous()
-                targets_shift = input_ids[:, 1:].contiguous()
+                targets_shift = input_ids[:, 1:].clone()
 
                 # Mask Padding Logic
                 pad_id = 2
@@ -222,6 +323,12 @@ def train():
             scaler.step(optimizer)
             scaler.update()
 
+            # [ANTIGRAVITY FIX] Clamp Alpha to force semantic learning
+            if hasattr(student, "output_layer"):
+                with torch.no_grad():
+                    # Force alpha <= 0.05. softplus(-2.95) ~= 0.05
+                    student.output_layer.alpha.data.clamp_(max=-2.95)
+
             if batch_idx % 10 == 0:
                 with open(metrics_file, "a", newline="") as f:
                     writer = csv.writer(f)
@@ -236,6 +343,18 @@ def train():
                             terms["mag"],
                         ]
                     )
+
+            if batch_idx % 50 == 0:
+                step_ckpt_path = os.path.join(CHECKPOINT_DIR, "checkpoint_latest.pt")
+                torch.save(
+                    {
+                        "epoch": epoch,
+                        "batch_idx": batch_idx,
+                        "model_state_dict": student.state_dict(),
+                        "optimizer_state_dict": optimizer.state_dict(),
+                    },
+                    step_ckpt_path,
+                )
 
             pbar.set_postfix(
                 {

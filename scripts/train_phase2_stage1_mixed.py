@@ -23,7 +23,7 @@ if not os.path.exists("logs"):
     os.makedirs("logs")
 
 logging.basicConfig(
-    filename="logs/train_stage1.log",
+    filename="logs/train_stage1_mixed.log",
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
 )
@@ -50,10 +50,10 @@ class SimpleDataset(Dataset):
 def train():
     # Configuration
     BATCH_SIZE = 8
-    EPOCHS = 20
-    LR = 3e-4
-    CHECKPOINT_DIR = "checkpoints/phase2_stage1"
-    DATA_PATH = "data/wikitext/train.pkl"
+    EPOCHS = 10  # 10 Epochs on mixed data (larger dataset) should be good
+    LR = 3e-4  # Standard pre-training LR
+    CHECKPOINT_DIR = "checkpoints/phase2_stage1_mixed"
+    DATA_PATH = "data/mixed_train.pkl"  # NEW DATASET
 
     if not os.path.exists(CHECKPOINT_DIR):
         os.makedirs(CHECKPOINT_DIR)
@@ -62,7 +62,13 @@ def train():
     logging.info(f"Using device: {device}")
 
     # 1. Load Data
-    logging.info("Loading data...")
+    if not os.path.exists(DATA_PATH):
+        logging.error(
+            f"Data file {DATA_PATH} not found. Run scripts/prepare_mixed_data.py first."
+        )
+        return
+
+    logging.info("Loading mixed data (WikiText + Alpaca)...")
     with open(DATA_PATH, "rb") as f:
         train_data = pickle.load(f)
 
@@ -71,7 +77,7 @@ def train():
     logging.info(f"Loaded {len(train_data)} samples.")
 
     # 2. Initialize Phase 2 Model
-    logging.info(f"Initializing IndraQuantum Phase 2 (Stage 1)...")
+    logging.info(f"Initializing IndraQuantum Phase 2 (Stage 1 Mixed)...")
     vocab_size = 32000
     d_model = 128
 
@@ -86,7 +92,7 @@ def train():
     criterion = nn.CrossEntropyLoss(ignore_index=-100)
 
     # 6. Training Loop
-    metrics_file = "logs/training_metrics_stage1.csv"
+    metrics_file = "logs/training_metrics_stage1_mixed.csv"
     with open(metrics_file, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["Epoch", "Batch", "Loss"])
@@ -141,7 +147,7 @@ def train():
 
         # Checkpoint
         ckpt_path = os.path.join(
-            CHECKPOINT_DIR, f"checkpoint_stage1_epoch_{epoch+1}.pt"
+            CHECKPOINT_DIR, f"checkpoint_stage1_mixed_epoch_{epoch+1}.pt"
         )
         torch.save(
             {
