@@ -212,4 +212,12 @@ data/
 
 checkpoints/
 logs/
-_archived/
+_archived/*.*
+_archive/indra/
+_archive/notebooks/
+_archive/plots/
+_archive/scripts/
+_archive/training/  
+_archive/utils/
+_archive/
+
