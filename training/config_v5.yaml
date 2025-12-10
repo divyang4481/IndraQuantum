@@ -2,7 +2,7 @@ project_name: "IndraQuantum-V5"
 run_name: "IndraV5-Tiny-Initialization"
 
 model:
-  vocab_size: 32000 # Typical Llama/Mistral size or custom
+  vocab_size: 50257 # Matched to GPT2 tokenizer
   d_model: 256
   num_layers: 4
   num_heads: 4
@@ -11,14 +11,14 @@ model:
   max_seq_len: 256
 
 training:
-  batch_size: 2 # Small batch for test
-  accumulate_grad_batches: 1
+  batch_size: 16 # Adjust for GPU mem
+  accumulate_grad_batches: 2
   learning_rate: 3.0e-4
-  max_steps: 5
-  warmup_steps: 1
-  log_every: 1
-  save_every: 5
-
+  max_steps: 1000
+  warmup_steps: 100
+  log_every: 10
+  save_every: 200
+  
 loss:
   rho_mag: 0.1
   rho_phase: 0.5
