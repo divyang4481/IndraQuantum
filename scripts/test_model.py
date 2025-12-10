@@ -20,7 +20,8 @@ def test_v5_init():
     input_ids = torch.randint(0, vocab, (2, 10))  # Batch 2, Seq 10
 
     # Forward
-    logits, z_states = model(input_ids)
+    logits, mag, phase = model(input_ids)
+    z_states = torch.polar(mag, phase)
     print(f"Logits Shape: {logits.shape} (Expected [2, 10, 100])")
     print(f"State Shape: {z_states.shape} (Expected [2, 10, 32])")
     print(f"Is Complex State? {torch.is_complex(z_states)}")

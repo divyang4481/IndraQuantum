@@ -54,7 +54,14 @@ def get_device(device_config):
 
 
 def generate(
-    model, tokenizer, prompt, max_new_tokens=50, temperature=0.7, top_k=50, device="cpu"
+    model,
+    tokenizer,
+    prompt,
+    max_new_tokens=50,
+    temperature=0.7,
+    top_k=50,
+    repetition_penalty=1.2,
+    device="cpu",
 ):
     model.eval()
 
@@ -70,8 +77,18 @@ def generate(
     with torch.no_grad():
         for _ in range(max_new_tokens):
             # Forward
-            logits, _ = model(generated)
+            logits, _, _ = model(generated)
             next_token_logits = logits[:, -1, :]
+
+            # Repetition Penalty
+            # For each token in generated sequence, divide its logit by penalty (if logit > 0) or multiply (if < 0)
+            # Simplified approach: Penalize logits of already generated tokens
+            if repetition_penalty != 1.0:
+                for token_id in set(generated[0].tolist()):
+                    if next_token_logits[0, token_id] > 0:
+                        next_token_logits[0, token_id] /= repetition_penalty
+                    else:
+                        next_token_logits[0, token_id] *= repetition_penalty
 
             # Temperature
             next_token_logits = next_token_logits / temperature
@@ -113,6 +130,12 @@ def main():
     )
     parser.add_argument(
         "--device", type=str, default=None, help="Override device (auto/cpu/cuda)"
+    )
+    parser.add_argument(
+        "--repetition_penalty",
+        type=float,
+        default=None,
+        help="Penalty for repeating tokens (default: 1.2)",
     )
     args = parser.parse_args()
 
@@ -172,6 +195,11 @@ def main():
     max_tokens = gen_cfg.get("max_new_tokens", 100)
     temp = gen_cfg.get("temperature", 0.7)
     top_k = gen_cfg.get("top_k", 50)
+    rep_pen = (
+        args.repetition_penalty
+        if args.repetition_penalty is not None
+        else gen_cfg.get("repetition_penalty", 1.2)
+    )
 
     # Load Tokenizer
     tokenizer = AutoTokenizer.from_pretrained("gpt2")
@@ -185,6 +213,7 @@ def main():
             max_new_tokens=max_tokens,
             temperature=temp,
             top_k=top_k,
+            repetition_penalty=rep_pen,
             device=device,
         )
 

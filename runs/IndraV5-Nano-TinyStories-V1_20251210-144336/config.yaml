@@ -1,6 +1,17 @@
 data:
+  cache_dir: data/datasets
   dataset_config: null
   dataset_name: roneneldan/TinyStories
+generation:
+  device: auto
+  max_new_tokens: 100
+  prompts:
+  - Once upon a time
+  - One day, a little girl named Alice
+  - The cat sat on the mat
+  repetition_penalty: 1.2
+  temperature: 0.7
+  top_k: 50
 loss:
   rho_mag: 0.1
   rho_phase: 0.5
@@ -14,7 +25,7 @@ model:
   num_layers: 6
   vocab_size: 50257
 project_name: IndraQuantum-V5
-run_name: IndraV5-Nano-TinyStories
+run_name: IndraV5-Nano-TinyStories-V1
 training:
   accumulate_grad_batches: 4
   batch_size: 8
