@@ -1,37 +1,34 @@
 import pickle
+import sys
+import os
 import torch
 from transformers import AutoTokenizer
 
 
 def inspect_data():
-    print("Loading data...")
-    with open("data/wikitext/train.pkl", "rb") as f:
-        data = pickle.load(f)[0:5]  # First 5 samples
+    sys.stdout.reconfigure(encoding="utf-8")
+    data_path = "data/mixed_train.pkl"
+    print(f"Loading {data_path}...")
+    with open(data_path, "rb") as f:
+        data = pickle.load(f)
 
     tokenizer = AutoTokenizer.from_pretrained("TinyLlama/TinyLlama-1.1B-Chat-v1.0")
-    print(f"Tokenizer PAD ID: {tokenizer.pad_token_id}")
-    print(f"Tokenizer UNK ID: {tokenizer.unk_token_id}")
-    print(f"Tokenizer EOS ID: {tokenizer.eos_token_id}")
 
-    for i in range(5):
-        item = data[i]
-        # Verify item structure
-        if not isinstance(item, dict):
-            print(f"Warning: Item {i} is not a dict, it is {type(item)}")
-            continue
-        ids = item["input_ids"]
-        mask = item["attention_mask"]
-        print(f"\nSample {i} (Length {len(ids)}):")
-        print(f"IDs: {ids[:20]} ... {ids[-20:]}")
-        print(f"Mask: {mask[:20]} ... {mask[-20:]}")
-        print(f"Decoded: {tokenizer.decode(ids[:50])}")
+    print("\n--- Sample 0 ---")
+    ids = data[0]["input_ids"]
+    text = tokenizer.decode(ids)
+    print(f"Decoded: {text}")
+    print(f"IDs: {ids[:30]}...")
 
-        # Check frequency of most common token
-        unique, counts = torch.tensor(ids).unique(return_counts=True)
-        most_common_idx = torch.argmax(counts)
-        print(
-            f"Most Common Token: {unique[most_common_idx]} (Count: {counts[most_common_idx]})"
-        )
+    print("\n--- Sample 100 ---")
+    ids = data[100]["input_ids"]
+    text = tokenizer.decode(ids)
+    print(f"Decoded: {text}")
+
+    print("\n--- Sample 1000 ---")
+    ids = data[1000]["input_ids"]
+    text = tokenizer.decode(ids)
+    print(f"Decoded: {text}")
 
 
 if __name__ == "__main__":

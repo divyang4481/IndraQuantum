@@ -68,48 +68,74 @@ class SemanticDistillationLoss(nn.Module):
         # CrossEntropyLoss already handles ignore_index=-100
         loss_ce = self.ce(student_logits.view(-1, vocab_size), flat_targets)
 
-        # 2. Adaptive Weights (Curriculum Learning)
+        # 2. Hard Staging (Curriculum)
         progress = current_epoch / total_epochs
 
-        # KD: 0.01 -> 0.05 (Strictly clamped)
-        kd_weight = 0.01 + (progress * 0.04)
-        kd_weight = min(0.05, max(0.01, kd_weight))
+        # Stage 1: Stability (0-30%) -> CE only
+        # Stage 2: Structure (30-60%) -> CE + KD
+        # Stage 3: Quantum Seasoning (60%+) -> CE + KD + Phase + Mag
 
-        # Aux: 0.0 -> 0.1
-        # Starts ramping at 20% progress. Max value is (1.0 - 0.2) * 0.125 = 0.1
-        aux_weight = max(0.0, (progress - 0.2) * 0.125) if progress > 0.2 else 0.0
+        if progress < 0.3:
+            kd_weight, aux_weight = 0.0, 0.0
+        elif progress < 0.6:
+            kd_weight, aux_weight = 0.05, 0.0
+        else:
+            kd_weight, aux_weight = 0.05, 0.1
 
-        # Teacher Probs
+        # Teacher Stats for Gating
         T = self.temperature
         with torch.no_grad():
             teacher_probs = F.softmax(teacher_logits / T, dim=-1)
             teacher_log_probs = F.log_softmax(teacher_logits / T, dim=-1)
 
-        # 3. Imitative Loss (KD)
-        # Calculate KL for all, then mask
-        s_log_probs = F.log_softmax(student_logits / T, dim=-1)
+            # Confidence Gating
+            max_prob, _ = teacher_probs.max(dim=-1)  # (B, T)
+            # Only apply auxiliary losses where teacher is confident
+            phase_gate = (max_prob > 0.3).float()
+            kd_gate = (max_prob > 0.2).float()  # Slightly looser for KD
 
-        # KL reduction='none' returns (B, T, V). Sum over V (dim=-1) to get token-level KL
-        kl_per_token = self.kl(s_log_probs, teacher_probs).sum(dim=-1)  # (B, T)
-        loss_kd = (kl_per_token.view(-1) * mask).sum() / num_valid * (T * T)
+        # 3. Imitative Loss (KD)
+        if kd_weight > 0:
+            s_log_probs = F.log_softmax(student_logits / T, dim=-1)
+            kl_per_token = self.kl(s_log_probs, teacher_probs).sum(dim=-1)  # (B, T)
+            # Gate KD by confidence
+            loss_kd = (
+                (kl_per_token.view(-1) * mask * kd_gate.view(-1)).sum()
+                / (num_valid + 1e-6)
+                * (T * T)
+            )
+        else:
+            loss_kd = torch.tensor(0.0, device=student_logits.device)
 
         # 4. Certainty Loss (Phase)
-        with torch.no_grad():
-            norm_H = self.normalize_entropy(teacher_log_probs)  # (B, T)
-            target_phase = norm_H * math.pi
+        if aux_weight > 0:
+            with torch.no_grad():
+                norm_H = self.normalize_entropy(teacher_log_probs)  # (B, T)
+                target_phase = norm_H * math.pi
 
-        student_avg_phase = torch.mean(torch.abs(student_phase), dim=-1)  # (B, T)
-        loss_phase_raw = self.mse(student_avg_phase, target_phase)  # (B, T)
-        loss_phase = (loss_phase_raw.view(-1) * mask).sum() / num_valid
+            student_avg_phase = torch.mean(torch.abs(student_phase), dim=-1)  # (B, T)
+            loss_phase_raw = self.mse(student_avg_phase, target_phase)  # (B, T)
+            # Gate Phase by confidence
+            loss_phase = (
+                loss_phase_raw.view(-1) * mask * phase_gate.view(-1)
+            ).sum() / (num_valid + 1e-6)
+        else:
+            loss_phase = torch.tensor(0.0, device=student_logits.device)
 
         # 5. Salience Loss (Magnitude)
-        with torch.no_grad():
-            max_prob, _ = torch.max(teacher_probs, dim=-1)  # (B, T)
-            target_mag = max_prob * 5.0
+        if aux_weight > 0:
+            with torch.no_grad():
+                # Correctly access max_prob computed above
+                target_mag = max_prob * 1.0
 
-        student_avg_mag = torch.mean(student_mag, dim=-1)  # (B, T)
-        loss_mag_raw = self.mse(student_avg_mag, target_mag)  # (B, T)
-        loss_mag = (loss_mag_raw.view(-1) * mask).sum() / num_valid
+            student_avg_mag = torch.mean(student_mag, dim=-1)  # (B, T)
+            loss_mag_raw = self.mse(student_avg_mag, target_mag)  # (B, T)
+            # Gate Magnitude by confidence
+            loss_mag = (loss_mag_raw.view(-1) * mask * phase_gate.view(-1)).sum() / (
+                num_valid + 1e-6
+            )
+        else:
+            loss_mag = torch.tensor(0.0, device=student_logits.device)
 
         # Total
         total_loss = (

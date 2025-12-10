@@ -23,7 +23,8 @@ class ComplexEmbeddingV2(nn.Module):
         # Phase (Context/Relationship)
         # Init with uniform distribution -pi to pi
         self.raw_phase = nn.Embedding(num_embeddings, embedding_dim)
-        nn.init.uniform_(self.raw_phase.weight, -math.pi, math.pi)
+        # Antigravity Fix: Start with low phase noise (near Real)
+        nn.init.uniform_(self.raw_phase.weight, -0.1, 0.1)
 
     def forward(self, x):
         # 1. Magnitude: Enforce positivity

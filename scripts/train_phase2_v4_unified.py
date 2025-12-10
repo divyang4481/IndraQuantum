@@ -132,8 +132,9 @@ def find_latest_checkpoint(checkpoint_dir):
 def train():
     # Configuration
     BATCH_SIZE = 4
+    ACCUM_STEPS = 8  # Effective Batch Size = 32
     EPOCHS = 20
-    LR = 3e-4  # Standard training rate
+    LR = 1e-4  # Reduced from 3e-4 for stability
     CHECKPOINT_DIR = "checkpoints/phase2_v4_unified"
     DATA_PATH = "data/mixed_train.pkl"  # Mixed Data (Wiki + Alpaca)
 
@@ -193,7 +194,7 @@ def train():
 
     # 4. Optimizer
     optimizer = optim.AdamW(student.parameters(), lr=LR)
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS)
+    # Scheduler is initialized after data loading now to know total steps
 
     # Mixed Precision Scaler
     # scaler = torch.cuda.amp.GradScaler() # Deprecated
@@ -247,8 +248,26 @@ def train():
         writer = csv.writer(f)
         if file_mode == "w":
             writer.writerow(
-                ["Epoch", "Batch", "Total_Loss", "CE", "KD", "Phase", "Mag"]
+                [
+                    "Epoch",
+                    "Batch",
+                    "Total_Loss",
+                    "CE",
+                    "KD",
+                    "Phase",
+                    "Mag",
+                    "Mag_Mean",
+                    "Mag_Std",
+                    "Phase_Mean",
+                    "Phase_Std",
+                ]
             )
+
+    optimizer.zero_grad()  # Initialize gradients
+
+    # Calculate total steps for scheduler
+    total_steps = EPOCHS * len(loader) // ACCUM_STEPS
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=total_steps)
 
     for epoch in range(start_epoch, EPOCHS):
         student.train()
@@ -258,7 +277,7 @@ def train():
             input_ids = batch["input_ids"].to(device, non_blocking=True)
             attention_mask = batch["attention_mask"].to(device, non_blocking=True)
 
-            optimizer.zero_grad()
+            # optimizer.zero_grad() # Moved to accumulation step
 
             # Autocast Context
             # with torch.cuda.amp.autocast(): # Deprecated
@@ -316,31 +335,51 @@ def train():
                     total_epochs=EPOCHS,
                 )
 
+                # Undo accumulation for backward (so we backward scaled loss)
+                loss = loss / ACCUM_STEPS
+
             # Scaled Backward
             scaler.scale(loss).backward()
-            scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(student.parameters(), 1.0)
-            scaler.step(optimizer)
-            scaler.update()
+
+            # Step Optimizer using Gradient Accumulation
+            if (batch_idx + 1) % ACCUM_STEPS == 0:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(student.parameters(), 1.0)
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad()
+                scheduler.step()
 
             # [ANTIGRAVITY FIX] Clamp Alpha to force semantic learning
             if hasattr(student, "output_layer"):
                 with torch.no_grad():
                     # Force alpha <= 0.05. softplus(-2.95) ~= 0.05
-                    student.output_layer.alpha.data.clamp_(max=-2.95)
+                    # student.output_layer.alpha.data.clamp_(max=-2.95)
+                    pass  # Alpha is frozen now, no need to clamp
 
             if batch_idx % 10 == 0:
+                # Calculate Quantum Stats
+                with torch.no_grad():
+                    mag_mean = s_mag.mean().item()
+                    mag_std = s_mag.std().item()
+                    phase_mean = s_phase.abs().mean().item()
+                    phase_std = s_phase.abs().std().item()
+
                 with open(metrics_file, "a", newline="") as f:
                     writer = csv.writer(f)
                     writer.writerow(
                         [
                             epoch + 1,
                             batch_idx,
-                            loss.item(),
+                            loss.item() * ACCUM_STEPS,  # Log actual loss scale
                             terms["ce"],
                             terms["kd"],
                             terms["phase"],
                             terms["mag"],
+                            mag_mean,
+                            mag_std,
+                            phase_mean,
+                            phase_std,
                         ]
                     )
 
@@ -358,13 +397,13 @@ def train():
 
             pbar.set_postfix(
                 {
-                    "L": f"{loss.item():.2f}",
+                    "L": f"{loss.item() * ACCUM_STEPS:.2f}",
                     "CE": f"{terms['ce']:.2f}",
                     "KD": f"{terms['kd']:.2f}",
                 }
             )
 
-        scheduler.step()
+        # scheduler.step() # Moved to step-wise inside loop
 
         ckpt_path = os.path.join(CHECKPOINT_DIR, f"checkpoint_v4_epoch_{epoch+1}.pt")
         torch.save(
