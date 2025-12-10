@@ -22,12 +22,12 @@ class IndraV5Block(nn.Module):
         residual = z
         z_norm = self.norm1(z)
         attn_out = self.attn(z_norm, z_norm, z_norm, attn_mask=mask)
-        z = residual + attn_out
+        z = residual + self.dropout(attn_out)  # Added Dropout
 
         residual = z
         z_norm = self.norm2(z)
         ffn_out = self.ffn(z_norm)
-        z = residual + ffn_out
+        z = residual + self.dropout(ffn_out)  # Added Dropout
         return z
 
 
@@ -54,6 +54,7 @@ class IndraV5(nn.Module):
         # "If we don't strictly enforce Phase usage... Laziness"
         # Let's add standard learnable complex positional embeddings for now.
         self.pos_embedding = ComplexEmbedding(max_seq_len, d_model)
+        self.dropout_in = ComplexDropout(dropout)
 
         # 2. Layers
         self.layers = nn.ModuleList(
@@ -66,6 +67,8 @@ class IndraV5(nn.Module):
         # 4. Head (Tie weights with embedding if possible? Complex tying is tricky)
         # Separate Head
         self.head = ComplexLinear(d_model, vocab_size, bias=False)
+        # Bias for final logits (important for Born measurement base rate)
+        self.final_bias = nn.Parameter(torch.zeros(vocab_size))
 
     def forward(self, input_ids, mask=None):
         B, L = input_ids.shape
@@ -77,6 +80,7 @@ class IndraV5(nn.Module):
         pos_ids = torch.arange(L, device=input_ids.device).unsqueeze(0)
         pos_z = self.pos_embedding(pos_ids)
         z = z + pos_z
+        z = self.dropout_in(z)
 
         # Layers
         for layer in self.layers:
@@ -84,12 +88,17 @@ class IndraV5(nn.Module):
 
         z_out = self.norm_f(z)
 
-        # Logits
-        # Project to Vocab
+        # Logits: PROJECT TO COMPLEX VOCAB
         z_logits = self.head(z_out)
 
-        # Convert Complex -> Real for CrossEntropy
-        # Use Magnitude: |z|
-        logits = z_logits.abs()
+        # BORN MEASUREMENT: Log(|z|^2 + eps) + Bias
+        # This couples Real/Imag because |z|^2 = r^2 + i^2
+        # Log space keeps it numerically stable for softplus/softmax
+        mag_sq = z_logits.real.pow(2) + z_logits.imag.pow(2)
+        logits = torch.log(mag_sq + 1e-6) + self.final_bias
 
-        return logits, z_out  # Return z_out for Holographic Loss (Phase analysis)
+        # Return explicit components for Holographic Loss
+        mag = z_out.abs()
+        phase = z_out.angle()
+
+        return logits, mag, phase
