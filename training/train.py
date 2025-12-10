@@ -162,11 +162,23 @@ def main():
             labels = batch["labels"].to(device)
 
             # Forward
-            logits, z_states = model(input_ids)
+            logits, z_mag, z_phase = model(input_ids)
 
             # Compute Loss
             # Logits: [B, L, V], Labels: [B, L]
-            loss, loss_dict = criterion(logits, z_states, targets=labels)
+            # Note: HolographicLoss might need updates to accept (mag, phase) directly or we reconstruct?
+            # loss_fn signature: (student_logits, student_z, ...)
+            # We can reconstruct student_z roughly or update HolographicLoss API.
+            # But wait, HolographicLoss mainly needs phase.
+            # Ideally we pass (mag, phase) or the complex z_out.
+            # In V5.forward we removed returning z_out for direct mag/phase return.
+            # Let's reconstruct or pass z_out.
+            # Actually, let's update HolographicLoss to take mag/phase directly OR
+            # update V5 forward to *also* return z_out or we re-compose.
+            # Re-composing: z = mag * exp(1j * phase)
+            z_reconstructed = torch.polar(z_mag, z_phase)
+
+            loss, loss_dict = criterion(logits, z_reconstructed, targets=labels)
 
             # Backward
             loss.backward()
