@@ -37,12 +37,6 @@ class ComplexAttention(nn.Module):
 
         # 1. Projections
         # Q = Qr + iQi
-        qr = self.query_real(x_real) - self.query_imag(
-            x_imag
-        )  # Complex multiplication: (a+bi)(c+di) = (ac-bd) + i(ad+bc)
-        qi = self.query_real(x_imag) + self.query_imag(
-            x_real
-        )  # Wait, standard linear layers don't do complex mul unless we force it.
         # SIMPLER: Independent projections for components
         qr = self.query_real(x_real)
         qi = self.query_imag(x_imag)  # This effectively mixes them if we train it so.
