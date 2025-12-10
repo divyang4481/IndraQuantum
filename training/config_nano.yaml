@@ -1,0 +1,40 @@
+project_name: "IndraQuantum-V5"
+run_name: "IndraV5-Nano-TinyStories"
+
+model:
+  vocab_size: 50257 # Standard GPT2 Tokenizer
+  d_model: 256
+  num_layers: 6      # Deeper for Reasoning (Nano size)
+  num_heads: 8       # 32 dim per head
+  d_ff: 1024         # 4x expansion
+  dropout: 0.1
+  max_seq_len: 512   # Enough for short stories context
+
+training:
+  batch_size: 8      # Laptop GPU friendly (adjust lower if OOM)
+  accumulate_grad_batches: 4 # Effective Batch Size = 32
+  learning_rate: 6.0e-4 # Slightly higher for smaller model
+  max_steps: 5000    # Enough for meaningful results on TinyStories
+  warmup_steps: 200
+  log_every: 50
+  save_every: 1000   # Save less frequently to save disk space
+  
+loss:
+  rho_mag: 0.1
+  rho_phase: 0.5
+  use_teacher_mag: false
+
+data:
+  dataset_name: "roneneldan/TinyStories"
+  dataset_config: null # Default configuration
+  cache_dir: "data/datasets" # Download to local project folder
+
+generation:
+  prompts:
+    - "Once upon a time"
+    - "One day, a little girl named Alice"
+    - "The cat sat on the mat"
+  max_new_tokens: 100
+  temperature: 0.7
+  top_k: 50
+  device: "auto" # auto, cpu, cuda

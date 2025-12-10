@@ -1,0 +1,25 @@
+data:
+  dataset_config: wikitext-2-v1
+  dataset_name: wikitext
+loss:
+  rho_mag: 0.1
+  rho_phase: 0.5
+  use_teacher_mag: false
+model:
+  d_ff: 1024
+  d_model: 256
+  dropout: 0.1
+  max_seq_len: 256
+  num_heads: 4
+  num_layers: 4
+  vocab_size: 32000
+project_name: IndraQuantum-V5
+run_name: IndraV5-Tiny-Initialization
+training:
+  accumulate_grad_batches: 1
+  batch_size: 2
+  learning_rate: 0.0003
+  log_every: 1
+  max_steps: 5
+  save_every: 5
+  warmup_steps: 1

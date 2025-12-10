@@ -53,10 +53,6 @@ def main():
     if run_dir != local_run_dir:
         print(f"Cloud Environment Detected. Saving artifacts to: {run_dir}")
 
-    # Save config to run dir
-    with open(os.path.join(run_dir, "config.yaml"), "w") as f:
-        yaml.dump(config, f)
-
     # 2. Loggers
     logger = setup_logger(run_dir)
     metric_logger = MetricsLogger(run_dir)
@@ -78,6 +74,13 @@ def main():
         )
         vocab_size = tokenizer.vocab_size
 
+    # Update config with actual vocab size used
+    config["model"]["vocab_size"] = vocab_size
+
+    # Save config to run dir (Save AFTER modifications)
+    with open(os.path.join(run_dir, "config.yaml"), "w") as f:
+        yaml.dump(config, f)
+
     model = IndraV5(
         vocab_size=vocab_size,
         d_model=config["model"]["d_model"],
@@ -93,10 +96,20 @@ def main():
     )
 
     # 4. Data
-    # Simple WikiText2 streaming or loading
     logger.info("Loading Dataset...")
+
+    # Check for cache_dir in config
+    cache_dir = config["data"].get("cache_dir", None)
+    if cache_dir:
+        # Ensure it exists
+        os.makedirs(cache_dir, exist_ok=True)
+        logger.info(f"Using local dataset cache: {cache_dir}")
+
     dataset = load_dataset(
-        config["data"]["dataset_name"], config["data"]["dataset_config"], split="train"
+        config["data"]["dataset_name"],
+        config["data"]["dataset_config"],
+        split="train",
+        cache_dir=cache_dir,
     )
 
     def tokenize_function(examples):
