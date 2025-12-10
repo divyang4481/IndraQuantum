@@ -121,7 +121,10 @@ def main():
         )
 
     tokenized_dataset = dataset.map(
-        tokenize_function, batched=True, remove_columns=["text"]
+        tokenize_function,
+        batched=True,
+        remove_columns=["text"],
+        num_proc=4,  # Speed up tokenization
     )
     tokenized_dataset.set_format("torch")
 
