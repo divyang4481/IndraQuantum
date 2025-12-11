@@ -5,7 +5,11 @@ import time
 import torch
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from transformers import AutoTokenizer, DataCollatorForLanguageModeling
+from transformers import (
+    AutoTokenizer,
+    DataCollatorForLanguageModeling,
+    get_linear_schedule_with_warmup,
+)
 from datasets import load_dataset
 
 # Add root to sys.path to ensure modules are found
@@ -91,6 +95,15 @@ def main():
         max_seq_len=config["model"]["max_seq_len"],
     ).to(device)
 
+    # RESUME LOGIC (Weights Only - Finetuning Style)
+    resume_path = config["training"].get("resume_checkpoint", None)
+    if resume_path and os.path.exists(resume_path):
+        logger.info(f"Resuming weights from: {resume_path}")
+        state_dict = torch.load(resume_path, map_location=device)
+        model.load_state_dict(state_dict)
+    elif resume_path:
+        logger.warning(f"Resume checkpoint specified but not found: {resume_path}")
+
     logger.info(
         f"Model Parameters: {sum(p.numel() for p in model.parameters())/1e6:.2f}M"
     )
@@ -141,6 +154,16 @@ def main():
     optimizer = optim.AdamW(
         model.parameters(), lr=float(config["training"]["learning_rate"])
     )
+
+    # Scheduler
+    # Convert 'accumulate_grad_batches' to account for scheduler steps
+    num_training_steps = config["training"]["max_steps"]
+    warmup_steps = config["training"].get("warmup_steps", 0)
+
+    scheduler = get_linear_schedule_with_warmup(
+        optimizer, num_warmup_steps=warmup_steps, num_training_steps=num_training_steps
+    )
+
     criterion = HolographicLoss(
         rho_mag=config["loss"]["rho_mag"], rho_phase=config["loss"]["rho_phase"]
     )
@@ -169,19 +192,12 @@ def main():
 
             # Compute Loss
             # Logits: [B, L, V], Labels: [B, L]
-            # Note: HolographicLoss might need updates to accept (mag, phase) directly or we reconstruct?
-            # loss_fn signature: (student_logits, student_z, ...)
-            # We can reconstruct student_z roughly or update HolographicLoss API.
-            # But wait, HolographicLoss mainly needs phase.
-            # Ideally we pass (mag, phase) or the complex z_out.
-            # In V5.forward we removed returning z_out for direct mag/phase return.
-            # Let's reconstruct or pass z_out.
-            # Actually, let's update HolographicLoss to take mag/phase directly OR
-            # update V5 forward to *also* return z_out or we re-compose.
-            # Re-composing: z = mag * exp(1j * phase)
             z_reconstructed = torch.polar(z_mag, z_phase)
 
             loss, loss_dict = criterion(logits, z_reconstructed, targets=labels)
+
+            # Divide loss by gradient accumulation steps for proper mean reduction
+            loss = loss / config["training"]["accumulate_grad_batches"]
 
             # Backward
             loss.backward()
@@ -189,6 +205,7 @@ def main():
             if (step + 1) % config["training"]["accumulate_grad_batches"] == 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 optimizer.step()
+                scheduler.step()  # Step scheduler
                 optimizer.zero_grad()
 
             total_loss_accum += loss_dict["total"]

@@ -1,0 +1,38 @@
+data:
+  cache_dir: data_cache
+  dataset_config: null
+  dataset_name: roneneldan/TinyStories
+  num_proc: 4
+  subset_name: null
+generation:
+  device: cuda
+  max_new_tokens: 50
+  prompts:
+  - Once upon a time
+  - One day, a little girl named Alice
+  - The cat sat on the mat
+  repetition_penalty: 1.2
+  temperature: 0.7
+  top_k: 50
+loss:
+  rho_mag: 0.1
+  rho_phase: 0.1
+model:
+  d_ff: 1024
+  d_model: 256
+  dropout: 0.2
+  max_seq_len: 512
+  num_heads: 4
+  num_layers: 6
+  vocab_size: 50257
+project_name: IndraQuantum-V7
+run_name: IndraV7-Nano-Phase2
+training:
+  accumulate_grad_batches: 16
+  batch_size: 2
+  learning_rate: 0.0003
+  log_every: 50
+  max_steps: 20000
+  resume_checkpoint: runs/IndraV7-Nano-Balanced_20251211-150957/final_model.pt
+  save_every: 1000
+  warmup_steps: 500

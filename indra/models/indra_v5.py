@@ -48,12 +48,11 @@ class IndraV5(nn.Module):
 
         # 1. Complex Embedding
         self.embedding = ComplexEmbedding(vocab_size, d_model)
-        # Positional Embedding?
-        # "Phase encodes position" - per V3/V5 theory.
-        # We should add positional phase rotation or just learnable positional embedding?
-        # "If we don't strictly enforce Phase usage... Laziness"
-        # Let's add standard learnable complex positional embeddings for now.
+
+        # V7 (Refined V5): Additive Scale 10.0
+        # "Phase encodes position" - Encouraged by additive signal
         self.pos_embedding = ComplexEmbedding(max_seq_len, d_model)
+
         self.dropout_in = ComplexDropout(dropout)
 
         # 2. Layers
@@ -64,8 +63,7 @@ class IndraV5(nn.Module):
         # 3. Output Norm
         self.norm_f = ComplexRMSNorm(d_model)
 
-        # 4. Head (Tie weights with embedding if possible? Complex tying is tricky)
-        # Separate Head
+        # 4. Head
         self.head = ComplexLinear(d_model, vocab_size, bias=False)
         # Bias for final logits (important for Born measurement base rate)
         self.final_bias = nn.Parameter(torch.zeros(vocab_size))
@@ -76,10 +74,14 @@ class IndraV5(nn.Module):
         # Embeddings
         z = self.embedding(input_ids)
 
-        # Add Positional Embeddings
+        # Add Positional Embeddings (Additive)
         pos_ids = torch.arange(L, device=input_ids.device).unsqueeze(0)
         pos_z = self.pos_embedding(pos_ids)
+
+        # INCREASE SIGNAL: Scale Position by 10.0 -> REVERTED (Too strong)
+        # Back to standard 1:1 mixing.
         z = z + pos_z
+
         z = self.dropout_in(z)
 
         # Layers

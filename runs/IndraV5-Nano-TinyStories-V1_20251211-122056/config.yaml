@@ -14,12 +14,12 @@ generation:
   top_k: 50
 loss:
   rho_mag: 0.1
-  rho_phase: 0.5
+  rho_phase: 0.0
   use_teacher_mag: false
 model:
   d_ff: 1024
   d_model: 256
-  dropout: 0.1
+  dropout: 0.2
   max_seq_len: 512
   num_heads: 8
   num_layers: 6
@@ -27,10 +27,10 @@ model:
 project_name: IndraQuantum-V5
 run_name: IndraV5-Nano-TinyStories-V1
 training:
-  accumulate_grad_batches: 4
-  batch_size: 8
-  learning_rate: 0.0006
+  accumulate_grad_batches: 16
+  batch_size: 2
+  learning_rate: 0.0003
   log_every: 50
-  max_steps: 5000
+  max_steps: 10000
   save_every: 1000
-  warmup_steps: 200
+  warmup_steps: 500
