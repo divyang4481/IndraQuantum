@@ -60,6 +60,7 @@ def generate(
     max_new_tokens=50,
     temperature=0.7,
     top_k=50,
+    top_p=0.9,  # Nucleus Sampling
     repetition_penalty=1.2,
     device="cpu",
 ):
@@ -97,6 +98,29 @@ def generate(
             if top_k > 0:
                 v, _ = torch.topk(next_token_logits, top_k)
                 next_token_logits[next_token_logits < v[:, [-1]]] = float("-inf")
+
+            # Top-P (Nucleus) Filtering
+            if top_p < 1.0:
+                sorted_logits, sorted_indices = torch.sort(
+                    next_token_logits, descending=True
+                )
+                cumulative_probs = torch.cumsum(
+                    F.softmax(sorted_logits, dim=-1), dim=-1
+                )
+
+                # Remove tokens with cumulative probability above the threshold
+                sorted_indices_to_remove = cumulative_probs > top_p
+                # Shift the indices to the right to keep the first token above the threshold
+                sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[
+                    ..., :-1
+                ].clone()
+                sorted_indices_to_remove[..., 0] = 0
+
+                # Scatter sorted indices to original indices
+                indices_to_remove = sorted_indices_to_remove.scatter(
+                    1, sorted_indices, sorted_indices_to_remove
+                )
+                next_token_logits[indices_to_remove] = float("-inf")
 
             # Sample
             probs = F.softmax(next_token_logits, dim=-1)
@@ -195,6 +219,7 @@ def main():
     max_tokens = gen_cfg.get("max_new_tokens", 100)
     temp = gen_cfg.get("temperature", 0.7)
     top_k = gen_cfg.get("top_k", 50)
+    top_p = gen_cfg.get("top_p", 0.9)  # Nucleus default
     rep_pen = (
         args.repetition_penalty
         if args.repetition_penalty is not None
@@ -213,6 +238,7 @@ def main():
             max_new_tokens=max_tokens,
             temperature=temp,
             top_k=top_k,
+            top_p=top_p,
             repetition_penalty=rep_pen,
             device=device,
         )

@@ -1,5 +1,5 @@
-project_name: "IndraQuantum-V5"
-run_name: "IndraV5-Nano-TinyStories-V1"
+project_name: "IndraQuantum-V7"
+run_name: "IndraV7-Nano-Balanced"
 
 model:
   vocab_size: 50257 # Standard GPT2 Tokenizer
@@ -7,21 +7,21 @@ model:
   num_layers: 6      # Deeper for Reasoning (Nano size)
   num_heads: 8       # 32 dim per head
   d_ff: 1024         # 4x expansion
-  dropout: 0.1
-  max_seq_len: 512   # Enough for short stories context
+  dropout: 0.2       # Increase dropout to prevent memorization
+  max_seq_len: 512
 
 training:
-  batch_size: 8      # Laptop GPU friendly (adjust lower if OOM)
-  accumulate_grad_batches: 4 # Effective Batch Size = 32
-  learning_rate: 6.0e-4 # Slightly higher for smaller model
-  max_steps: 5000    # Enough for meaningful results on TinyStories
-  warmup_steps: 200
+  batch_size: 2       # Reduce to fit in 6GB VRAM (Avoid thrashing)
+  accumulate_grad_batches: 16 # 2 * 16 = 32 effective batch size
+  learning_rate: 3.0e-4 # Slower, more stable learning
+  max_steps: 10000    # Give it more time to find good minima
+  warmup_steps: 500   # Longer warmup
   log_every: 50
-  save_every: 1000   # Save less frequently to save disk space
+  save_every: 1000
   
 loss:
   rho_mag: 0.1
-  rho_phase: 0.5
+  rho_phase: 0.0      # Disabled to verify backbone capability
   use_teacher_mag: false
 
 data:
