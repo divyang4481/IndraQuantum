@@ -29,7 +29,7 @@ def setup_logger(run_dir, name="IndraV5"):
 
 
 class MetricsLogger:
-    def __init__(self, run_dir, filename="metrics.csv"):
+    def __init__(self, run_dir, filename="metrics.csv", resume=False):
         self.file_path = os.path.join(run_dir, filename)
         self.headers = [
             "step",
@@ -37,15 +37,17 @@ class MetricsLogger:
             "total_loss",
             "ce_loss",
             "phase_loss",
-            "mag_loss",
+            "kd_loss",
             "lr",
             "throughput",
         ]
 
-        # Initialize CSV
-        with open(self.file_path, "w", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow(self.headers)
+        # Initialize CSV only if not resuming or file doesn't exist
+        if not resume or not os.path.exists(self.file_path):
+            with open(self.file_path, "w", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(self.headers)
+        # Else: file exists and resume=True, just append later
 
     def log(self, metrics_dict):
         """
