@@ -78,6 +78,8 @@ class IndraV5(nn.Module):
         # 4. Head
         self.head = ComplexLinear(d_model, vocab_size, bias=False)
         self.final_bias = nn.Parameter(torch.zeros(vocab_size))
+        # Logit Scale (Inverse Temperature) to fix Gradient Bottleneck in Born Rule
+        self.logit_scale = nn.Parameter(torch.tensor(1.0))
 
         if tie_word_embeddings:
             self.head.weight_real = self.embedding.embed_real.weight
@@ -106,18 +108,18 @@ class IndraV5(nn.Module):
             # mask is [B, L], 1=keep, 0=pad
             # Expand to [B, 1, 1, L] for broadcasting with [B, 1, L, L] causal mask?
             # actually we want [B, 1, 1, L] so that for every query pos, we mask keys that are pads.
-            
+
             # Create additive mask: 0.0 for 1, -inf for 0
             extended_mask = (1.0 - mask[:, None, None, :]) * torch.finfo(z.dtype).min
-            
+
             # causal_mask is [1, 1, L, L] (triu)
             # extended_mask is [B, 1, 1, L]
-            
+
             # We want final mask to be min(causal, padding)
             # causal blocks future. padding blocks pads.
             # causal is -inf for future. padding is -inf for pads.
             # sum works if we use 0 and -inf.
-            
+
             final_mask = causal_mask + extended_mask
         else:
             final_mask = causal_mask
@@ -136,7 +138,7 @@ class IndraV5(nn.Module):
         z_logits = self.head(z_out)
 
         mag_sq = z_logits.real.pow(2) + z_logits.imag.pow(2)
-        logits = torch.log(mag_sq + 1e-6) + self.final_bias
+        logits = (torch.log(mag_sq + 1e-6) + self.final_bias) * self.logit_scale
 
         mag = z_out.abs()
         phase = z_out.angle()

@@ -107,3 +107,46 @@ To strictly prevent the network from treating real/imag parts as independent cha
 - Reverting scaling back to 1.0 yielded `Token/Pos Ratio = 1.07` (Perfect Balance).
 - **Conclusion**: The optimal architecture is **IndraV5 Backbone + Additive Complex Positions + Phase Annealing**.
 - **Action**: Train for 20k steps to allow long-term coherence to emerge naturally.
+
+### V8 Performance Analysis (Dec 15, 2025)
+
+**Problem**: Training loss stuck at floor ~6.6.
+
+- Despite optimal hyperparameters (`PagedAdamW`, `CosineScheduler`, `FP32`), the model fails to significantly reduce CE loss below 6.6.
+- This corresponds to a perplexity of ~$e^{6.6} \approx 735$, meaning the model is uncertain and cannot express high confidence.
+
+**Root Cause Analysis**: The **Born Rule vs. Normalization Conflict**.
+
+1.  **The Physics (Born Rule)**: The output probability is defined as $P(token) \propto |z|^2$. (In code: `logits = log(|z|^2)`).
+2.  **The Conflict**: To produce a high-confidence prediction (e.g., $P > 0.99$ or logit $10.0$), the squared magnitude $|z|^2$ must be massive ($\approx e^{10} \approx 22,000$).
+3.  **The Constraint**: The `ComplexRMSNorm` layer immediately preceding the final projection forces $|z| \approx 1.0$.
+4.  **The Result**: To predict confident tokens, the final Linear layer (`self.head`) must learn weights with massive gain ($150\times$). Gradient descent struggles to push weights this far because gradients vanish for large output magnitudes in this log-square landscape ($d(\log x^2)/dx = 2/x$).
+
+**Data Evidence**:
+
+- Training Metrics (Dec 15): Consistent "Smooth CE Loss" floor at 6.6.
+- Gradient flows show vanishing updates for the final head compared to internal layers.
+
+**Solutions**:
+
+### 1. Logit Scaling (The "System Temperature" Fix) - **Recommended**
+
+We introduce a learnable scalar $\alpha$ (Inverse Temperature) to the output:
+$$Logits = \alpha \cdot \log(|z|^2)$$
+This implies a generalized probability rule $P \propto |z|^{2\alpha}$.
+
+- **Why it works**: If the model struggles to grow the magnitude $|z|$ due to the $1/z$ gradient penalty, it can simply **increase $\alpha$** to sharpen predictions. This decouples "Confidence" from "Feature Magnitude".
+- **Preserves Quantum Nature**: It maintains the Born Rule structure while accounting for system temperature.
+
+### 2. Gaussian Probability (Removing the Log)
+
+We change the output definition to $Logits = |z|^2$, implying $P \propto e^{|z|^2}$.
+
+- **Why it works**: The derivative of $|z|^2$ is $2z$, meaning gradients **grow** with confidence. Training is extremely stable.
+- **Trade-off**: This transitions the model from a "Quantum Born Machine" to a "Boltzmann Machine".
+
+**Action Plan (Step 6600)**:
+Implement **Solution 1 (Logit Scaling)**.
+
+1.  Add `self.logit_scale = nn.Parameter(torch.tensor(1.0))` to `IndraV5`.
+2.  Update forward pass: `logits = (torch.log(mag_sq + 1e-6) + self.final_bias) * self.logit_scale`.

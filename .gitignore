@@ -26,6 +26,8 @@ share/python-wheels/
 *.egg
 MANIFEST
 
+data_cache/
+
 # PyInstaller
 #  Usually these files are written by a python script from a template
 #  before PyInstaller builds the exe, so as to inject date/other infos into it.
@@ -220,4 +222,5 @@ _archive/scripts/
 _archive/training/  
 _archive/utils/
 _archive/
+data_cache/
 
