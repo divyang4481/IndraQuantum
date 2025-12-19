@@ -12,7 +12,8 @@ from transformers import (
     AutoModelForCausalLM,
     BitsAndBytesConfig,
     DataCollatorForLanguageModeling,
-    get_linear_schedule_with_warmup,
+    DataCollatorForLanguageModeling,
+    get_cosine_schedule_with_warmup,
 )
 import torch.amp as amp  # Use new namespace
 from datasets import load_dataset
@@ -106,40 +107,17 @@ class DistillationLoss(nn.Module):
 
 
 def load_teacher_model(model_name="Qwen/Qwen2.5-1.5B-Instruct"):
-    print(f"Loading Teacher: {model_name} (4-bit)...")
+    print(f"Loading Teacher: {model_name} (CPU Offload to save VRAM)...")
 
-    try:
-        bnb_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=torch.float16,
-        )
-        teacher = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            quantization_config=bnb_config,
-            device_map={"": 0},
-            trust_remote_code=True,
-        )
-        print("Loaded Teacher in 4-bit (bitsandbytes).")
-    except Exception as e:
-        print(f"bitsandbytes loading failed ({e}). Falling back to FP16.")
-        # Check for accelerate
-        try:
-            import accelerate
-
-            device_map = {"": 0}
-        except ImportError:
-            print("Accelerate not found. Loading to CPU then moving to CUDA (Slow).")
-            device_map = None
-
-        teacher = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            torch_dtype=torch.float16,
-            device_map=device_map,
-            trust_remote_code=True,
-        )
-        if device_map is None:
-            teacher = teacher.to("cuda" if torch.cuda.is_available() else "cpu")
+    # Force CPU Loading to save 100% VRAM for Student
+    # CPU inference is slower but allows Full FP32 Student Training on 6GB GPU
+    teacher = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        torch_dtype=torch.float32,  # CPU prefers float32
+        device_map="cpu",
+        trust_remote_code=True,
+    )
+    print("Loaded Teacher on CPU.")
     teacher.eval()  # Always Eval
     return teacher
 
@@ -288,11 +266,24 @@ def main():
                 student.parameters(), lr=float(config["training"]["learning_rate"])
             )
     else:
-        optimizer = optim.AdamW(
-            student.parameters(), lr=float(config["training"]["learning_rate"])
-        )
-        logger.info("Using standard AdamW optimizer")
-    scheduler = get_linear_schedule_with_warmup(
+        # Try Paged 32-bit Optimizer to handle VRAM spillover (Shared RAM is slow)
+        try:
+            import bitsandbytes as bnb
+
+            optimizer = bnb.optim.PagedAdamW32bit(
+                student.parameters(), lr=float(config["training"]["learning_rate"])
+            )
+            logger.info(
+                "Using Paged 32-bit AdamW optimizer (Offloads states to RAM, restores speed)"
+            )
+        except ImportError:
+            logger.warning(
+                "bitsandbytes not available, using Standard AdamW (May spill to Shared RAM)"
+            )
+            optimizer = optim.AdamW(
+                student.parameters(), lr=float(config["training"]["learning_rate"])
+            )
+    scheduler = get_cosine_schedule_with_warmup(
         optimizer,
         num_warmup_steps=config["training"]["warmup_steps"],
         num_training_steps=config["training"]["max_steps"],
@@ -325,20 +316,20 @@ def main():
         if "model_state_dict" in checkpoint:
             # Full State
             new_lr = config["training"]["learning_rate"]
-            student.load_state_dict(checkpoint["model_state_dict"])
-            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-            if "scheduler_state_dict" in checkpoint:
-                scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
-                # Patch scheduler to respect new max LR
-                for param_group in scheduler.optimizer.param_groups:
-                    param_group["lr"] = new_lr
-                # Update base_lrs if present (for some schedulers)
-                if hasattr(scheduler, "base_lrs"):
-                    scheduler.base_lrs = [new_lr] * len(scheduler.base_lrs)
-                logger.info("Scheduler adjusted to new config LR.")
+            student.load_state_dict(
+                checkpoint["model_state_dict"], strict=False
+            )  # strict=False to allow adding new params like logit_scale
+            # optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+            # if "scheduler_state_dict" in checkpoint:
+            #     scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+
+            logger.info(
+                "Optimizer & Scheduler states RESET to support 8-bit -> 32-bit transition."
+            )
+            logger.info("A fresh Warmup phase will occur now.")
 
             start_step = checkpoint.get("step", 0)
-            logger.info(f"Resumed from step {start_step} (Full State)")
+            logger.info(f"Resumed from step {start_step} (Full State - Model Only)")
 
             if use_ema and "ema_state_dict" in checkpoint and ema_model:
                 ema_model.load_state_dict(checkpoint["ema_state_dict"])
@@ -371,8 +362,8 @@ def main():
         param_group["lr"] = new_lr
     logger.info(f"Optimizer LR forced to {new_lr:.2e} from config.")
 
-    # AMP Scaler (New API)
-    scaler = amp.GradScaler("cuda")
+    # AMP Scaler (New API) - DISABLED for Complex Weights Stability
+    scaler = amp.GradScaler("cuda", enabled=False)
 
     # 8. Training Loop
     student.train()
@@ -404,12 +395,17 @@ def main():
             else:
                 mask = None
 
-            # Mixed Precision Context
-            with amp.autocast("cuda"):
+            # Mixed Precision Context - DISABLED to prevent ComplexHalf precision loss
+            with amp.autocast("cuda", enabled=False):
                 # TEACHER PASS (No Grad)
                 with torch.no_grad():
-                    teacher_out = teacher(input_ids, attention_mask=mask)
-                    teacher_logits = teacher_out.logits
+                    teacher_out = teacher(
+                        input_ids.to("cpu"),
+                        attention_mask=mask.to("cpu") if mask is not None else None,
+                    )
+                    teacher_logits = teacher_out.logits.to(
+                        device
+                    )  # Move logits back to GPU for loss
 
                 # STUDENT PASS
                 student_logits, _, _ = student(input_ids, mask=mask)
