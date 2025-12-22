@@ -224,3 +224,4 @@ _archive/utils/
 _archive/
 data_cache/
 
+runs/IndraV11-GPUDistill-Llama_20251219-130308/*.pt
