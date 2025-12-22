@@ -1,0 +1,39 @@
+project_name: "IndraAgent-V11"
+run_name: "IndraV11-Distill-Refine"
+
+model:
+  vocab_size: 151936 # Qwen 2.5
+  d_model: 512
+  num_layers: 8
+  num_heads: 8
+  d_ff: 2048
+  dropout: 0.1
+  max_seq_len: 256
+  tie_word_embeddings: true
+  gradient_checkpointing: true
+  window_size: null
+
+training:
+  batch_size: 1
+  accumulate_grad_batches: 32 # Effective Batch = 32
+  learning_rate: 3.0e-4
+  max_steps: 50000
+  warmup_steps: 500
+  save_every: 100
+  log_every: 10
+  use_8bit_optimizer: false
+  use_ema: false
+  ema_decay: 0.9999
+
+distillation:
+  teacher_model: "Qwen/Qwen2.5-0.5B-Instruct"  # Or 1.5B if VRAM permits, but sticking to previous config
+  temperature: 4.0 # Increased from 2.0
+  alpha_ce: 0.5
+  alpha_kd: 0.5
+  top_k: 64 # New Top-K Param for KD
+
+data:
+  dataset_name: "teknium/OpenHermes-2.5"
+  subset_name: null 
+  num_proc: 4
+  truncation_side: "left" # Configurable here
