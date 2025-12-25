@@ -74,30 +74,82 @@ def test_model(checkpoint_path, config_path):
 
         input_ids = tokenizer(input_text, return_tensors="pt").input_ids.to(device)
 
+        # Generation Loop with Sampling & Repetition Penalty
+        print("\nIndra: ", end="", flush=True)
+
+        # Hyperparameters
+        temperature = 0.7
+        top_k = 50
+        top_p = 0.9
+        repetition_penalty = 1.2
+        max_new_tokens = 100
+
         with torch.no_grad():
             generated_ids = input_ids.clone()
 
-            print("\nIndra: ", end="", flush=True)
-            for i in range(50):  # Force 50 tokens
-                outputs, _, _ = model(generated_ids)
+            for i in range(max_new_tokens):
+                # Crop context if growing too large
+                context = generated_ids[:, -config["model"]["max_seq_len"] :]
+
+                outputs, _, _ = model(context)
                 next_token_logits = outputs[:, -1, :]
 
-                # Apply temperature to break "safe" loops
-                next_token_logits = next_token_logits / 0.8
+                # 1. Repetition Penalty
+                # penalize tokens that have already been generated
+                for token_id in set(generated_ids[0].tolist()):
+                    if next_token_logits[0, token_id] < 0:
+                        next_token_logits[0, token_id] *= repetition_penalty
+                    else:
+                        next_token_logits[0, token_id] /= repetition_penalty
 
-                # Greedy
-                next_token = torch.argmax(next_token_logits, dim=-1).unsqueeze(0)
+                # 2. Temperature
+                next_token_logits = next_token_logits / temperature
+
+                # 3. Top-K Filtering
+                if top_k > 0:
+                    v, _ = torch.topk(next_token_logits, top_k)
+                    min_v = v[:, -1]
+                    next_token_logits[next_token_logits < min_v.unsqueeze(1)] = -float(
+                        "Inf"
+                    )
+
+                # 4. Top-P (Nucleus) Filtering
+                if top_p < 1.0:
+                    sorted_logits, sorted_indices = torch.sort(
+                        next_token_logits, descending=True
+                    )
+                    cumulative_probs = torch.softmax(sorted_logits, dim=-1).cumsum(
+                        dim=-1
+                    )
+
+                    # Remove tokens with cumulative probability above the threshold
+                    sorted_indices_to_remove = cumulative_probs > top_p
+                    # Shift the indices to the right to keep also the first token above the threshold
+                    sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[
+                        ..., :-1
+                    ].clone()
+                    sorted_indices_to_remove[..., 0] = 0
+
+                    indices_to_remove = sorted_indices_to_remove.scatter(
+                        1, sorted_indices, sorted_indices_to_remove
+                    )
+                    next_token_logits[indices_to_remove] = -float("Inf")
+
+                # 5. Sample
+                probs = torch.softmax(next_token_logits, dim=-1)
+                next_token = torch.multinomial(probs, num_samples=1)
+
+                # Stop if EOS
+                if next_token.item() == tokenizer.eos_token_id:
+                    break
 
                 # Print token
                 word = tokenizer.decode(next_token[0], skip_special_tokens=True)
-                print(f"{word}", end="", flush=True)  # Print clean word
+                print(f"{word}", end="", flush=True)
 
                 generated_ids = torch.cat([generated_ids, next_token], dim=1)
 
-        print("\n\n--- DEBUG INFO ---")
-        print(f"Propagated Text: {repr(input_text)}")
-        print(f"Input IDs: {input_ids.tolist()}")
-        print("------------------\n")
+        print("\n")
 
 
 if __name__ == "__main__":

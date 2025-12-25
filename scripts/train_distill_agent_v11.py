@@ -389,6 +389,19 @@ def main():
         start_step = checkpoint["step"]
         optimizer_step = start_step
 
+        # FORCE LR from Config (Override Checkpoint)
+        new_lr = float(config["training"]["learning_rate"])
+        for param_group in optimizer.param_groups:
+            param_group["lr"] = new_lr
+
+        # Also scale down the scheduler's base_lrs so the cosine curve scales down
+        # get_cosine_schedule_with_warmup stores initial LRs in base_lrs
+        if hasattr(scheduler, "base_lrs"):
+            for i in range(len(scheduler.base_lrs)):
+                scheduler.base_lrs[i] = new_lr
+
+        logger.info(f"Resumed: Forced Learning Rate to {new_lr:.2e}")
+
     # Scaler
     scaler = amp.GradScaler("cuda", enabled=False)
 
@@ -460,29 +473,29 @@ def main():
                     throughput = (
                         optimizer_step * config["training"]["batch_size"] * accum_steps
                     ) / (time.time() - start_time + 1e-6)
-                    
+
                     # Console Metrics (Nice Formatting)
                     metrics = {
-                        "loss": f"{loss_dict['total']:.3f}", 
+                        "loss": f"{loss_dict['total']:.3f}",
                         "ce": f"{loss_dict['ce']:.3f}",
                         "kd": f"{loss_dict['kd']:.3f}",
-                        "lr": f"{optimizer.param_groups[0]['lr']:.1e}", 
+                        "lr": f"{optimizer.param_groups[0]['lr']:.1e}",
                         "akd": f"{criterion.alpha_kd:.2f}",
                     }
-                    
+
                     # CSV Metrics (Full Precision/Headers)
                     csv_metrics = {
                         "step": optimizer_step,
                         "epoch": epoch,
                         "total_loss": f"{loss_dict['total']:.4f}",
                         "ce_loss": f"{loss_dict['ce']:.4f}",
-                        "phase_loss": "", 
+                        "phase_loss": "",
                         "kd_loss": f"{loss_dict['kd']:.4f}",
                         "lr": f"{optimizer.param_groups[0]['lr']:.2e}",
                         "throughput": f"{throughput:.2f}",
                     }
                     metric_logger.log(csv_metrics)
-                    
+
                     # Update TQDM Postfix
                     pbar.set_postfix(metrics)
 
