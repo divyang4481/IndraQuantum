@@ -16,7 +16,7 @@ model:
 training:
   batch_size: 1
   accumulate_grad_batches: 8
-  learning_rate: 1.0e-4
+  learning_rate: 3.0e-4
   max_steps: 50000
   warmup_steps: 500
   save_every: 100

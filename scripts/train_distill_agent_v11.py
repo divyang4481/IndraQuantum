@@ -288,11 +288,12 @@ def main():
                 # Labels: [-100, -100, ..., answer_id, answer_id]
                 seq_labels = [ignore_id] * len(prompt_ids) + answer_ids
 
-                # Truncate if too long (Left Truncate)
+                # FORCE FILTER: If too long, SKIP IT. Do not truncate.
+                # This ensures we only train on "Complete Thoughts" that fit in 256.
                 if len(total_ids) > max_len:
-                    # Keep end
-                    total_ids = total_ids[-max_len:]
-                    seq_labels = seq_labels[-max_len:]
+                    inputs.append([])
+                    labels.append([])
+                    continue
 
                 # Pad if too short
                 pad_len = max_len - len(total_ids)
